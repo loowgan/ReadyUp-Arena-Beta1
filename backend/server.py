@@ -9,11 +9,16 @@ import os, logging, uuid, random, secrets
 import bcrypt, httpx
 from jose import jwt, JWTError
 from urllib.parse import urlencode, urlparse
-from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
+
+try:
+    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
+except ImportError:
+    StripeCheckout = None
+    CheckoutSessionRequest = None
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
