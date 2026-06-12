@@ -1,0 +1,183 @@
+{
+  "project_name": "ReadyUp Arena",
+  "theme": "DARK",
+  "archetype": "7 (Electric & Neon) + 2 (Performance Pro) Hybrid",
+  "description": "A high-stakes, competitive e-sport CS2 tournament platform. Visual identity focuses on 'Neon Strike': deep black/anthracite/night blue with neon orange/red/yellow accents. Aggressive, tactical, modern, and highly fluid.",
+  "design_tokens": {
+    "colors": {
+      "background": {
+        "base": "#050608",
+        "surface": "#0F1115",
+        "elevated": "#0A1228",
+        "glass": "rgba(15, 17, 21, 0.7)"
+      },
+      "brand": {
+        "primary": "#FF4600",
+        "primary_glow": "rgba(255, 70, 0, 0.4)",
+        "secondary": "#FFB800",
+        "accent": "#FF003C",
+        "cyan_tech": "#00F0FF"
+      },
+      "text": {
+        "primary": "#FFFFFF",
+        "secondary": "#94A3B8",
+        "muted": "#475569",
+        "inverse": "#000000"
+      },
+      "status": {
+        "success": "#00F0FF",
+        "warning": "#FFB800",
+        "danger": "#FF003C",
+        "info": "#3B82F6",
+        "verified": "#00F0FF"
+      },
+      "arbitration": {
+        "yellow_card": "#FFB800",
+        "red_card": "#FF003C"
+      },
+      "borders": {
+        "subtle": "rgba(255, 255, 255, 0.05)",
+        "default": "rgba(255, 255, 255, 0.1)",
+        "neon": "rgba(255, 70, 0, 0.5)"
+      }
+    },
+    "typography": {
+      "font_families": {
+        "heading": "'Chakra Petch', sans-serif",
+        "body": "'Rajdhani', sans-serif",
+        "mono": "'Major Mono Display', monospace"
+      },
+      "scales": {
+        "h1": "text-5xl sm:text-6xl tracking-tighter uppercase font-bold",
+        "h2": "text-3xl sm:text-4xl tracking-tight uppercase font-semibold",
+        "h3": "text-2xl sm:text-3xl tracking-tight font-medium",
+        "h4": "text-xl font-medium",
+        "body": "text-base tracking-wide",
+        "small": "text-sm tracking-wider uppercase",
+        "micro": "text-xs tracking-[0.2em] uppercase"
+      }
+    },
+    "effects": {
+      "shadows": {
+        "neon_primary": "0 0 15px rgba(255, 70, 0, 0.5)",
+        "neon_secondary": "0 0 15px rgba(255, 184, 0, 0.5)",
+        "glass": "0 8px 32px rgba(0, 0, 0, 0.4)"
+      },
+      "borders": {
+        "radius_card": "rounded-lg",
+        "radius_button": "rounded-none clip-path-slant"
+      },
+      "textures": {
+        "noise": "bg-[url('https://images.pexels.com/photos/9665188/pexels-photo-9665188.jpeg')] bg-cover bg-blend-overlay opacity-20",
+        "scanlines": "repeating-linear-gradient(to bottom, transparent, transparent 2px, rgba(0,0,0,0.1) 2px, rgba(0,0,0,0.1) 4px)"
+      }
+    }
+  },
+  "component_patterns": {
+    "cards": {
+      "glassmorphic": "bg-glass backdrop-blur-xl border border-borders-subtle rounded-lg p-6 relative overflow-hidden",
+      "glowing_border": "before:absolute before:inset-0 before:p-[1px] before:bg-gradient-to-br before:from-brand-primary before:to-transparent before:rounded-lg before:-z-10",
+      "team_card": "bg-background-surface border border-borders-default hover:border-brand-primary transition-colors duration-300 relative",
+      "asymmetric_clip": "clip-path-[polygon(0_0,100%_0,100%_calc(100%-12px),calc(100%-12px)_100%,0_100%)]"
+    },
+    "buttons": {
+      "primary": "bg-brand-primary text-text-inverse font-heading uppercase tracking-widest px-8 py-3 hover:bg-brand-secondary hover:shadow-neon_primary transition-all duration-300 clip-path-[polygon(10px_0,100%_0,100%_calc(100%-10px),calc(100%-10px)_100%,0_100%,0_10px)]",
+      "outline": "border border-brand-primary text-brand-primary font-heading uppercase tracking-widest px-8 py-3 hover:bg-brand-primary/10 hover:shadow-neon_primary transition-all duration-300",
+      "ghost": "text-text-secondary hover:text-text-primary px-4 py-2 uppercase tracking-wider text-sm transition-colors duration-200"
+    },
+    "inputs": {
+      "default": "bg-background-base border-b border-borders-default px-4 py-2 text-text-primary focus:border-brand-primary focus:outline-none focus:ring-0 transition-colors duration-300 rounded-none w-full"
+    },
+    "badges": {
+      "steam_verified": "bg-background-elevated border border-brand-cyan_tech/30 text-brand-cyan_tech px-3 py-1 text-xs uppercase tracking-widest flex items-center gap-2 rounded-sm shadow-[0_0_8px_rgba(0,240,255,0.2)]",
+      "status_live": "bg-brand-accent/20 border border-brand-accent text-brand-accent px-3 py-1 text-xs uppercase font-bold animate-pulse"
+    }
+  },
+  "motion_patterns": {
+    "page_transitions": {
+      "entrance": "staggered fade-up, elements enter with slight vertical translation and opacity fade in (duration 0.4s, ease-out)"
+    },
+    "interactions": {
+      "hover": "glow intensity increases, border colors shift to brand-primary, slight scale-up (1.02) for cards"
+    },
+    "complex_animations": {
+      "countdown_10_0": {
+        "10_to_7": "Slow, massive pulse with heartbeat scale effect in center of screen.",
+        "6_to_4": "Rapid zooming scale effect, increasing blur and speed.",
+        "3": "High intensity, colors shift to red/orange, screen shake starts.",
+        "2": "Heavy vibration, CSS translate shake, text distortion.",
+        "1": "Screen flash white.",
+        "0": "Luminous explosion (radial gradient burst), confetti particles."
+      },
+      "bracket_reveal": "Sweeping light beams across the screen, animated draw cards flipping into place, moderate particle emitter (confetti)."
+    }
+  },
+  "accessibility": {
+    "reduced_motion": "Wrap all heavy animations (countdown, bracket reveal, particles) in prefers-reduced-motion media query. Fallback to simple opacity fades. Stop auto-playing videos.",
+    "no_sound": "Ensure all countdowns and reveals rely purely on visual cues, no mandatory audio feedback.",
+    "contrast": "Maintain APCA compliant contrast for text against #050608 and #0F1115 backgrounds.",
+    "keyboard": "Ensure all interactive elements have visible focus states (e.g., ring-2 ring-brand-primary outline-none)."
+  },
+  "page_blueprints": {
+    "Home": {
+      "hero": "Massive typography 'READYUP ARENA' with background video/image of dark esport stadium. Overlay scanlines. CTA to 'Join Tournament'.",
+      "live_block": "Twitch Major Embed prominently displayed with a glowing 'LIVE' badge and red neon border.",
+      "sections": "Upcoming Tournaments (Bento grid), Top Teams Leaderboard, Platform Stats."
+    },
+    "TournamentsCatalog": {
+      "layout": "Sidebar for filters (Game modes, Skill level, Dates), Main area for grid of Tournament Cards.",
+      "cards": "Include status badges (Open, Full, Live), prize pool, registered teams count, and dynamic background images."
+    },
+    "TournamentDetail": {
+      "hero": "Tournament banner with intense neon gradients and logo.",
+      "tabs": "Overview, Brackets (visual tree), Participants, Rules.",
+      "content": "Real-time registration status, prize distribution, schedule timeline."
+    },
+    "WaitingRoom": {
+      "layout": "Split view: Team Queue vs Solo Queue.",
+      "real_time": "Live updating participant lists, glowing 'Ready' toggles, countdown timer to match start."
+    },
+    "MatchRoom": {
+      "layout": "Team A vs Team B split layout. Center holds the score and live server IP.",
+      "features": "1v1 Challenge tokens integration, Match logs, reporting tools."
+    },
+    "PlayerProfile": {
+      "hero": "Avatar with Steam Verified badge glowing cyan.",
+      "stats_cards": "Bento grid of stats fetched from CSStats/CSWAT.CH (mocked). K/D ratio, Win Rate, ELO progression bar."
+    },
+    "TeamPage": {
+      "layout": "Team logo, roster grid, recent match history, team ELO graph."
+    },
+    "Rankings": {
+      "layout": "Dense data table for Top Players and Teams. Sortable columns, heavily branded with thin borders."
+    },
+    "OrganizerAdmin": {
+      "layout": "Dense, functional dashboard. Sidebar navigation. High contrast data visualization.",
+      "features": "Bracket generator, Yellow/Red cards arbitration system panel, Match dispute resolution."
+    },
+    "Donations": {
+      "layout": "Centered payment card, Stripe/PayPal integration options, 'Support the Arena' messaging with virtual tokens display."
+    }
+  },
+  "media_assets": {
+    "backgrounds": {
+      "esport_stadium": "https://images.unsplash.com/photo-1633545495735-25df17fb9f31?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzR8MHwxfHNlYXJjaHwxfHxlc3BvcnQlMjBzdGFkaXVtJTIwZGFya3xlbnwwfHx8fDE3ODEwMTI1Njl8MA&ixlib=rb-4.1.0&q=85",
+      "industrial_neon": "https://images.unsplash.com/photo-1559619081-8fd2cc754ca3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwyfHxpbmR1c3RyaWFsJTIwbmVvbiUyMGRhcmt8ZW58MHx8fHwxNzgxMDEyNTY4fDA&ixlib=rb-4.1.0&q=85",
+      "tactical_grid": "https://images.pexels.com/photos/7599718/pexels-photo-7599718.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+    },
+    "textures": {
+      "particles": "https://images.pexels.com/photos/9665188/pexels-photo-9665188.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the DARK theme and Archetype 7+2 combo. Do not introduce generic white backgrounds.",
+    "For typography, import 'Chakra Petch' and 'Rajdhani' from Google Fonts and configure them in tailwind.config.js.",
+    "Do NOT use typical Shadcn rounded cards out of the box. Modify Shadcn components to have sharp or slightly rounded corners with the glowing borders and glassmorphism specified in the design_tokens.",
+    "All interactive elements MUST have data-testid attributes (e.g., data-testid='tournament-register-button').",
+    "Use Framer Motion to implement the specific 10-0 countdown animation logic (scale, shake, flash) and ensure it responds to window.matchMedia('(prefers-reduced-motion: reduce)').",
+    "The wait room and 10-0 countdown should use mocked real-time state via standard React useEffect/useState hooks.",
+    "In the Admin panel, build the Yellow/Red card arbitration flow with distinct colors (#FFB800, #FF003C).",
+    "All texts and parameters must be passed as props or kept in a configurable constant file to satisfy the 'administrable' requirement.",
+    "Ensure the CSStats/CSWAT.CH stats on the profile page use the correct 'Verified' badges and neon cyan glows."
+  ]
+}

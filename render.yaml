@@ -1,0 +1,60 @@
+services:
+  - type: web
+    name: readyup-arena-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health/ready
+    envVars:
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: readyup_arena
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: SEED_ADMIN_EMAIL
+        sync: false
+      - key: SEED_ADMIN_PASSWORD
+        sync: false
+      - key: SEED_ADMIN_PSEUDO
+        value: ReadyUpAdmin
+      - key: SEED_ADMIN_COUNTRY
+        value: FR
+      - key: SEED_ADMIN_TOKENS
+        value: "1000"
+      - key: FRONTEND_URL
+        sync: false
+      - key: BACKEND_PUBLIC_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: CORS_ALLOW_CREDENTIALS
+        value: "false"
+      - key: FEATURE_STEAM_AUTH
+        value: "true"
+      - key: FEATURE_TWITCH
+        value: "true"
+      - key: FEATURE_STRIPE_DONATIONS
+        value: "false"
+      - key: FEATURE_PAYPAL
+        value: "false"
+      - key: FEATURE_CSSTATS
+        value: "false"
+      - key: TWITCH_CHANNEL
+        value: esl_csgo
+      - key: MATCHZY_WEBHOOK_SECRET
+        generateValue: true
+      - key: RCON_ENC_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENDER_EMAIL
+        value: onboarding@resend.dev
+      - key: STRIPE_API_KEY
+        sync: false
