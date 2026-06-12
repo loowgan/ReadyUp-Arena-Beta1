@@ -29,11 +29,11 @@ services:
       - key: SEED_ADMIN_TOKENS
         value: "1000"
       - key: FRONTEND_URL
-        sync: false
+        value: http://localhost:3000
       - key: BACKEND_PUBLIC_URL
-        sync: false
+        value: ""
       - key: CORS_ORIGINS
-        sync: false
+        value: http://localhost:3000,http://127.0.0.1:3000
       - key: CORS_ALLOW_CREDENTIALS
         value: "false"
       - key: FEATURE_STEAM_AUTH
@@ -53,8 +53,8 @@ services:
       - key: RCON_ENC_KEY
         sync: false
       - key: RESEND_API_KEY
-        sync: false
+        value: ""
       - key: SENDER_EMAIL
         value: onboarding@resend.dev
       - key: STRIPE_API_KEY
-        sync: false
+        value: ""
