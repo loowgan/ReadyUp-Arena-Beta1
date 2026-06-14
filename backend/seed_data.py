@@ -14,14 +14,14 @@ TEAMS = [
 ]
 
 PLAYERS = [
-    {"id": "p1", "pseudo": "Vortex", "country": "FR", "level": 47, "xp": 8420, "xp_next": 10000, "elo": 2240, "rank_cs2": "Global Elite", "kdr": 1.42, "role": "AWP", "steam_verified": True, "online": True, "available": True, "team_id": "t1", "reliability": 97},
-    {"id": "p2", "pseudo": "Cipher", "country": "DE", "level": 44, "xp": 7200, "xp_next": 9000, "elo": 2180, "rank_cs2": "Supreme", "kdr": 1.31, "role": "IGL", "steam_verified": True, "online": True, "available": False, "team_id": "t2", "reliability": 95},
-    {"id": "p3", "pseudo": "NoxFury", "country": "SE", "level": 41, "xp": 6800, "xp_next": 8500, "elo": 2090, "rank_cs2": "Legendary Eagle Master", "kdr": 1.24, "role": "Entry", "steam_verified": True, "online": True, "available": True, "team_id": None, "reliability": 91},
-    {"id": "p4", "pseudo": "Spectre", "country": "RU", "level": 38, "xp": 5600, "xp_next": 7000, "elo": 1980, "rank_cs2": "Legendary Eagle", "kdr": 1.18, "role": "Support", "steam_verified": True, "online": True, "available": True, "team_id": None, "reliability": 88},
-    {"id": "p5", "pseudo": "Halcyon", "country": "PT", "level": 35, "xp": 4900, "xp_next": 6000, "elo": 1890, "rank_cs2": "Distinguished Master Guardian", "kdr": 1.09, "role": "Rifler", "steam_verified": False, "online": True, "available": True, "team_id": None, "reliability": 84},
-    {"id": "p6", "pseudo": "Blaze", "country": "NL", "level": 33, "xp": 4200, "xp_next": 5500, "elo": 1820, "rank_cs2": "Master Guardian Elite", "kdr": 1.04, "role": "Lurker", "steam_verified": True, "online": False, "available": False, "team_id": "t6", "reliability": 87},
-    {"id": "p7", "pseudo": "Quantum", "country": "PL", "level": 30, "xp": 3500, "xp_next": 4500, "elo": 1750, "rank_cs2": "Master Guardian II", "kdr": 0.98, "role": "AWP", "steam_verified": True, "online": True, "available": True, "team_id": None, "reliability": 78},
-    {"id": "p8", "pseudo": "Wraith", "country": "ES", "level": 28, "xp": 2900, "xp_next": 4000, "elo": 1690, "rank_cs2": "Master Guardian I", "kdr": 0.95, "role": "Entry", "steam_verified": False, "online": True, "available": True, "team_id": None, "reliability": 76},
+    {"id": "p1", "pseudo": "Vortex", "country": "FR", "level": 47, "xp": 8420, "xp_next": 10000, "elo": 2240, "platform_elo": 2240, "faceit_elo": 2430, "premier_rating": 27420, "kills_30d": 412, "deaths_30d": 290, "kdr": 1.42, "rank_cs2": "Global Elite", "role": "AWP", "steam_verified": True, "online": True, "available": True, "team_id": "t1", "reliability": 97},
+    {"id": "p2", "pseudo": "Cipher", "country": "DE", "level": 44, "xp": 7200, "xp_next": 9000, "elo": 2180, "platform_elo": 2180, "faceit_elo": 2315, "premier_rating": 26110, "kills_30d": 367, "deaths_30d": 280, "kdr": 1.31, "rank_cs2": "Supreme", "role": "IGL", "steam_verified": True, "online": True, "available": False, "team_id": "t2", "reliability": 95},
+    {"id": "p3", "pseudo": "NoxFury", "country": "SE", "level": 41, "xp": 6800, "xp_next": 8500, "elo": 2090, "platform_elo": 2090, "faceit_elo": 2190, "premier_rating": 24880, "kills_30d": 345, "deaths_30d": 278, "kdr": 1.24, "rank_cs2": "Legendary Eagle Master", "role": "Entry", "steam_verified": True, "online": True, "available": True, "team_id": None, "reliability": 91},
+    {"id": "p4", "pseudo": "Spectre", "country": "RU", "level": 38, "xp": 5600, "xp_next": 7000, "elo": 1980, "platform_elo": 1980, "faceit_elo": 2085, "premier_rating": 23140, "kills_30d": 295, "deaths_30d": 250, "kdr": 1.18, "rank_cs2": "Legendary Eagle", "role": "Support", "steam_verified": True, "online": True, "available": True, "team_id": None, "reliability": 88},
+    {"id": "p5", "pseudo": "Halcyon", "country": "PT", "level": 35, "xp": 4900, "xp_next": 6000, "elo": 1890, "platform_elo": 1890, "faceit_elo": None, "premier_rating": 21980, "kills_30d": 262, "deaths_30d": 240, "kdr": 1.09, "rank_cs2": "Distinguished Master Guardian", "role": "Rifler", "steam_verified": False, "online": True, "available": True, "team_id": None, "reliability": 84},
+    {"id": "p6", "pseudo": "Blaze", "country": "NL", "level": 33, "xp": 4200, "xp_next": 5500, "elo": 1820, "platform_elo": 1820, "faceit_elo": 1910, "premier_rating": 20540, "kills_30d": 260, "deaths_30d": 250, "kdr": 1.04, "rank_cs2": "Master Guardian Elite", "role": "Lurker", "steam_verified": True, "online": False, "available": False, "team_id": "t6", "reliability": 87},
+    {"id": "p7", "pseudo": "Quantum", "country": "PL", "level": 30, "xp": 3500, "xp_next": 4500, "elo": 1750, "platform_elo": 1750, "faceit_elo": 1765, "premier_rating": 19410, "kills_30d": 245, "deaths_30d": 250, "kdr": 0.98, "rank_cs2": "Master Guardian II", "role": "AWP", "steam_verified": True, "online": True, "available": True, "team_id": None, "reliability": 78},
+    {"id": "p8", "pseudo": "Wraith", "country": "ES", "level": 28, "xp": 2900, "xp_next": 4000, "elo": 1690, "platform_elo": 1690, "faceit_elo": None, "premier_rating": 18220, "kills_30d": 228, "deaths_30d": 240, "kdr": 0.95, "rank_cs2": "Master Guardian I", "role": "Entry", "steam_verified": False, "online": True, "available": True, "team_id": None, "reliability": 76},
 ]
 
 NEWS = [
@@ -157,6 +157,19 @@ async def seed_all(db):
         await db.teams.insert_many([dict(t) for t in TEAMS])
     if await db.players.count_documents({}) == 0:
         await db.players.insert_many([dict(p) for p in PLAYERS])
+    for player in PLAYERS:
+        await db.players.update_one(
+            {"id": player["id"]},
+            {"$set": {
+                "platform_elo": player.get("platform_elo", player.get("elo", 1000)),
+                "faceit_elo": player.get("faceit_elo"),
+                "premier_rating": player.get("premier_rating"),
+                "kills_30d": player.get("kills_30d"),
+                "deaths_30d": player.get("deaths_30d"),
+                "kdr": player.get("kdr"),
+                "stats_last_sync_at": now.isoformat(),
+            }},
+        )
     if await db.news.count_documents({}) == 0:
         docs = []
         for n in NEWS:

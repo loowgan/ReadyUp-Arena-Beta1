@@ -100,6 +100,16 @@ class UserPublic(BaseModel):
     level: int
     xp: int
     elo: int
+    platform_elo: int
+    faceit_elo: Optional[int] = None
+    premier_rating: Optional[int] = None
+    kills_30d: Optional[int] = None
+    deaths_30d: Optional[int] = None
+    kdr: Optional[float] = None
+    rank_cs2: Optional[str] = None
+    role: Optional[str] = None
+    reliability: int = 50
+    stats_last_sync_at: Optional[str] = None
     steam_verified: bool
     created_at: str
     is_admin: bool = False
@@ -129,10 +139,48 @@ EFFECTIVE_ADMIN_EMAILS = ADMIN_EMAILS | ({SEED_ADMIN_EMAIL} if SEED_ADMIN_EMAIL 
 def is_admin_email(email: str) -> bool:
     return (email or "").lower() in EFFECTIVE_ADMIN_EMAILS
 
+def _compute_kdr(doc: dict) -> Optional[float]:
+    kills = doc.get("kills_30d")
+    deaths = doc.get("deaths_30d")
+    if isinstance(kills, (int, float)) and isinstance(deaths, (int, float)) and deaths > 0:
+        return round(float(kills) / float(deaths), 2)
+    fallback = doc.get("kdr")
+    if isinstance(fallback, (int, float)):
+        return round(float(fallback), 2)
+    return None
+
+
+def _stats_sources(doc: dict) -> dict:
+    return {
+        "platform": "ReadyUp Arena",
+        "faceit": "FACEIT" if doc.get("faceit_elo") is not None else None,
+        "premier": "Valve Premier" if doc.get("premier_rating") is not None else None,
+        "kdr": "CS gameplay sample" if _compute_kdr(doc) is not None else None,
+    }
+
+
+def _public_stats_payload(doc: dict) -> dict:
+    platform_elo = int(doc.get("platform_elo", doc.get("elo", 1000)))
+    return {
+        "elo": platform_elo,
+        "platform_elo": platform_elo,
+        "faceit_elo": doc.get("faceit_elo"),
+        "premier_rating": doc.get("premier_rating"),
+        "kills_30d": doc.get("kills_30d"),
+        "deaths_30d": doc.get("deaths_30d"),
+        "kdr": _compute_kdr(doc),
+        "rank_cs2": doc.get("rank_cs2"),
+        "role": doc.get("role"),
+        "reliability": int(doc.get("reliability", 50)),
+        "stats_last_sync_at": doc.get("stats_last_sync_at"),
+        "stats_sources": _stats_sources(doc),
+    }
+
+
 def user_to_public(u: dict) -> dict:
     return {"id": u["id"], "pseudo": u["pseudo"], "email": u["email"],
             "country": u.get("country","FR"), "level": u.get("level",1),
-            "xp": u.get("xp",0), "elo": u.get("elo",1000),
+            "xp": u.get("xp",0), **_public_stats_payload(u),
             "steam_verified": u.get("steam_verified", False),
             "created_at": u["created_at"],
             "is_admin": is_admin_email(u.get("email"))}
@@ -157,7 +205,12 @@ async def register(req: RegisterReq, request: Request):
     user = {
         "id": str(uuid.uuid4()), "pseudo": req.pseudo, "email": req.email.lower(),
         "password_hash": hash_password(req.password), "country": req.country,
-        "level": 1, "xp": 0, "elo": 1000, "steam_verified": False, "steam_id": None,
+        "level": 1, "xp": 0, "elo": 1000, "platform_elo": 1000,
+        "faceit_elo": None, "premier_rating": None,
+        "kills_30d": None, "deaths_30d": None, "kdr": None,
+        "rank_cs2": None, "role": "Polyvalent", "reliability": 50,
+        "stats_last_sync_at": None,
+        "steam_verified": False, "steam_id": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "ip": request.client.host if request.client else None,
     }
@@ -417,7 +470,8 @@ async def list_teams():
 @api_router.get("/players")
 async def list_players(available_only: bool = False):
     q = {"available": True} if available_only else {}
-    return await db.players.find(q, {"_id": 0}).sort("elo", -1).to_list(200)
+    docs = await db.players.find(q, {"_id": 0}).sort("elo", -1).to_list(200)
+    return [{**doc, **_public_stats_payload(doc)} for doc in docs]
 
 @api_router.get("/tournaments")
 async def list_tournaments(status: Optional[str] = None):
@@ -1077,7 +1131,12 @@ async def steam_callback(request: Request):
             "id": str(uuid.uuid4()), "pseudo": f"Steam_{steam_id[-6:]}",
             "email": f"steam_{steam_id}@readyup.local",
             "password_hash": hash_password(uuid.uuid4().hex), "country": "??",
-            "level": 1, "xp": 0, "elo": 1000, "steam_verified": True, "steam_id": steam_id,
+            "level": 1, "xp": 0, "elo": 1000, "platform_elo": 1000,
+            "faceit_elo": None, "premier_rating": None,
+            "kills_30d": None, "deaths_30d": None, "kdr": None,
+            "rank_cs2": None, "role": "Polyvalent", "reliability": 55,
+            "stats_last_sync_at": None,
+            "steam_verified": True, "steam_id": steam_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(user)
@@ -1529,6 +1588,24 @@ async def _seed_admin_user():
     })
     logger.info("Seeded initial admin account from environment configuration")
 
+
+async def _backfill_user_stats():
+    async for user in db.users.find({}, {"_id": 0}):
+        updates = {}
+        if "platform_elo" not in user:
+            updates["platform_elo"] = int(user.get("elo", 1000))
+        if "role" not in user:
+            updates["role"] = "Polyvalent"
+        if "reliability" not in user:
+            updates["reliability"] = 50
+        if "stats_last_sync_at" not in user:
+            updates["stats_last_sync_at"] = None
+        computed_kdr = _compute_kdr(user)
+        if computed_kdr is not None and user.get("kdr") != computed_kdr:
+            updates["kdr"] = computed_kdr
+        if updates:
+            await db.users.update_one({"id": user["id"]}, {"$set": updates})
+
 @app.on_event("startup")
 async def _startup():
     await seed_all(db)
@@ -1539,6 +1616,7 @@ async def _startup():
     if not STRIPE_API_KEY:
         logger.info("Stripe donations are disabled: STRIPE_API_KEY is not configured.")
     await _seed_admin_user()
+    await _backfill_user_stats()
     # Resume any countdowns persisted in Redis (survive backend reboots)
     for tid in await rs.active_countdowns():
         asyncio.create_task(countdown_task(tid))

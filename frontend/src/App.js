@@ -218,6 +218,21 @@ const makeRewardForm = () => ({
   delivery_notes: "Traitement manuel ou automatique selon le type de reward.",
 });
 
+const formatMetric = (value, digits = 0) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (typeof value === "number") {
+    return digits > 0 ? value.toFixed(digits) : value.toLocaleString("fr-FR");
+  }
+  return String(value);
+};
+
+const sortByMetric = (items, field) =>
+  [...items].sort((a, b) => {
+    const left = typeof a?.[field] === "number" ? a[field] : -Infinity;
+    const right = typeof b?.[field] === "number" ? b[field] : -Infinity;
+    return right - left;
+  });
+
 const Particles = () => (
   <div className="particles">{[...Array(20)].map((_, i) => (
     <span key={i} style={{ left: `${Math.random()*100}%`, animationDelay: `${Math.random()*8}s`, animationDuration: `${6+Math.random()*6}s` }}/>))}</div>
@@ -401,8 +416,8 @@ const Home = () => {
                 {player.steam_verified && <Badge variant="verified">Steam vérifié</Badge>}
               </div>
               <div className="grid grid-cols-3 gap-2 mt-5 text-center">
-                <div><div className="font-display text-cyan-neon text-xl">{player.elo}</div><div className="text-[10px] uppercase tracking-widest text-white/40">ELO</div></div>
-                <div><div className="font-display text-white text-xl">{player.kdr}</div><div className="text-[10px] uppercase tracking-widest text-white/40">KDR</div></div>
+                <div><div className="font-display text-cyan-neon text-xl">{formatMetric(player.platform_elo ?? player.elo)}</div><div className="text-[10px] uppercase tracking-widest text-white/40">ELO</div></div>
+                <div><div className="font-display text-white text-xl">{formatMetric(player.kdr, 2)}</div><div className="text-[10px] uppercase tracking-widest text-white/40">KDR</div></div>
                 <div><div className="font-display text-yellow-neon text-xl">{player.reliability}</div><div className="text-[10px] uppercase tracking-widest text-white/40">Fiabilité</div></div>
               </div>
             </div>
@@ -949,25 +964,70 @@ const MatchRoom = () => (
 /* ============== PROFILE ============== */
 const Profile = () => {
   const { user: currentUser } = useAuth();
-  const fallback = { pseudo: "Vortex", country: "FR", level: 47, xp: 8420, xp_next: 10000, elo: 2240, rank_cs2: "Global Elite", kdr: 1.42, role: "AWP", steam_verified: true, reliability: 97 };
-  const p = currentUser ? { ...fallback, ...currentUser, xp_next: Math.max(currentUser.xp + 500, 1000) } : fallback;
+  const demoProfile = {
+    pseudo: "Vortex",
+    country: "FR",
+    level: 47,
+    xp: 8420,
+    xp_next: 10000,
+    elo: 2240,
+    platform_elo: 2240,
+    faceit_elo: 2430,
+    premier_rating: 27420,
+    kills_30d: 412,
+    deaths_30d: 290,
+    kdr: 1.42,
+    rank_cs2: "Global Elite",
+    role: "AWP",
+    steam_verified: true,
+    reliability: 97,
+    stats_last_sync_at: new Date().toISOString(),
+  };
+  const emptyProfile = {
+    pseudo: "Player",
+    country: "FR",
+    level: 1,
+    xp: 0,
+    xp_next: 1000,
+    elo: 1000,
+    platform_elo: 1000,
+    faceit_elo: null,
+    premier_rating: null,
+    kills_30d: null,
+    deaths_30d: null,
+    kdr: null,
+    rank_cs2: "Non renseigné",
+    role: "Polyvalent",
+    steam_verified: false,
+    reliability: 50,
+    stats_last_sync_at: null,
+  };
+  const p = currentUser
+    ? { ...emptyProfile, ...currentUser, xp_next: Math.max((currentUser.xp || 0) + 500, 1000) }
+    : demoProfile;
   const xpPct = (p.xp / p.xp_next) * 100;
+  const statCards = [
+    { label: "ELO plateforme", value: formatMetric(p.platform_elo ?? p.elo), src: "ReadyUp Arena", state: "synced", color: "text-orange-500" },
+    { label: "Premier Rating", value: formatMetric(p.premier_rating), src: "Valve Premier", state: p.premier_rating ? "synced" : "indisponible", color: "text-red-500" },
+    { label: "FACEIT ELO", value: formatMetric(p.faceit_elo), src: "FACEIT", state: p.faceit_elo ? "synced" : "non lié", color: "text-cyan-neon" },
+    { label: "K/D Ratio (30j)", value: formatMetric(p.kdr, 2), src: "Historique de match", state: p.kdr !== null && p.kdr !== undefined ? "synced" : "indisponible", color: "text-yellow-neon" },
+  ];
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="profile-page">
       <div className="glass p-8 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-96 h-96 bg-orange-500/10 blur-3xl"/>
         <div className="flex items-center gap-6 relative">
           <div className="relative">
-            <div className="w-28 h-28 bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center font-display text-5xl font-bold">V</div>
+            <div className="w-28 h-28 bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center font-display text-5xl font-bold">{(p.pseudo || "P").slice(0,1).toUpperCase()}</div>
             <div className="absolute -bottom-2 -right-2 bg-black border border-orange-500 px-2 py-0.5 text-xs font-display">LVL {p.level}</div>
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="font-display text-4xl uppercase">{p.pseudo}</h1>
               {p.steam_verified && <Badge variant="verified" testid="steam-verified-badge"><Shield size={12}/>STEAM VÉRIFIÉ</Badge>}
-              <span className="text-white/50 text-sm">🇫🇷 {p.country}</span>
+              <span className="text-white/50 text-sm">{p.country}</span>
             </div>
-            <p className="text-white/50 mt-1">{p.role} • Recherche d'équipe</p>
+            <p className="text-white/50 mt-1">{p.role} • Rang CS2: {p.rank_cs2 || "Non renseigné"}</p>
             <div className="mt-4">
               <div className="flex justify-between text-xs text-white/60 mb-1"><span>XP {p.xp}/{p.xp_next}</span><span>Niveau {p.level + 1} dans {p.xp_next - p.xp} XP</span></div>
               <div className="h-2 bg-white/5 overflow-hidden"><div className="h-full bg-gradient-to-r from-orange-500 to-red-500" style={{ width: `${xpPct}%`, boxShadow: "0 0 12px rgba(255,70,0,0.6)" }}/></div>
@@ -976,21 +1036,17 @@ const Profile = () => {
         </div>
       </div>
 
-      <SectionTitle sub="Statistiques tierces" title="Stats externes vérifiées"/>
-      <div className="grid md:grid-cols-3 gap-4">
-        {[
-          { label: "Premier Rating", value: "27,420", src: "Valve Premier", state: "verified", color: "text-orange-500" },
-          { label: "FACEIT ELO", value: p.elo, src: "CSStats.gg", state: "synced", color: "text-cyan-neon" },
-          { label: "K/D Ratio (30j)", value: p.kdr.toFixed(2), src: "CSWAT.CH", state: "synced", color: "text-yellow-neon" },
-        ].map((s,i) => (
+      <SectionTitle sub="Statistiques" title="Classement & sources"/>
+      <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
+        {statCards.map((s,i) => (
           <div key={i} className="glass p-6" data-testid={`stat-card-${i}`}>
             <div className="text-xs uppercase tracking-widest text-white/50">{s.label}</div>
             <div className={`font-display text-5xl font-bold mt-2 ${s.color}`}>{s.value}</div>
             <div className="flex items-center justify-between mt-3 pt-3 border-t border-white/5 text-xs">
               <span className="text-white/40">Source : <span className="text-white/70">{s.src}</span></span>
-              <Badge variant="verified">{s.state}</Badge>
+              <Badge variant={s.state === "synced" ? "verified" : "offline"}>{s.state}</Badge>
             </div>
-            <div className="text-[10px] text-white/30 mt-2">Synchro : il y a 4 min</div>
+            <div className="text-[10px] text-white/30 mt-2">Dernière synchro : {p.stats_last_sync_at ? new Date(p.stats_last_sync_at).toLocaleString("fr-FR") : "jamais"}</div>
           </div>))}
       </div>
 
@@ -1035,23 +1091,42 @@ const Rankings = () => {
   const [teams, setTeams] = useState([]);
   const [players, setPlayers] = useState([]);
   useEffect(() => { axios.get(`${API}/teams`).then(r=>setTeams(r.data)); axios.get(`${API}/players`).then(r=>setPlayers(r.data)); }, []);
+  const topTeams = [...teams].sort((a, b) => (b.elo ?? 0) - (a.elo ?? 0));
+  const topPlayersPlatform = sortByMetric(players, "platform_elo");
+  const topPlayersFaceit = sortByMetric(players, "faceit_elo");
+  const topPlayersKdr = sortByMetric(players, "kdr");
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="rankings-page">
       <h1 className="font-display text-5xl uppercase">Classements — Saison 1</h1>
-      <div className="grid lg:grid-cols-2 gap-6 mt-6">
-        <div className="glass p-6"><h3 className="font-display text-xl uppercase mb-4">Top équipes</h3>
-          {teams.sort((a,b)=>b.elo-a.elo).map((t,i) => (
+      <p className="text-white/50 mt-2">Les classements FACEIT et K/D sont séparés de l'ELO plateforme pour éviter les faux calculs et les mélanges de sources.</p>
+      <div className="grid xl:grid-cols-2 gap-6 mt-6">
+        <div className="glass p-6"><h3 className="font-display text-xl uppercase mb-4">Top équipes — ELO plateforme</h3>
+          {topTeams.map((t,i) => (
             <div key={t.id} className="flex items-center gap-3 py-3 border-b border-white/5" data-testid={`rank-team-${i}`}>
               <span className={`font-display text-2xl w-8 ${i<3 ? "text-yellow-neon" : "text-white/30"}`}>{i+1}</span>
               <TeamLogo team={t} size={36}/><span className="flex-1 font-display">{t.name}</span>
-              <span className="text-orange-500 font-display">{t.elo}</span>
+              <span className="text-orange-500 font-display">{formatMetric(t.elo)}</span>
             </div>))}</div>
-        <div className="glass p-6"><h3 className="font-display text-xl uppercase mb-4">Top joueurs</h3>
-          {players.sort((a,b)=>b.elo-a.elo).map((p,i) => (
+        <div className="glass p-6"><h3 className="font-display text-xl uppercase mb-4">Top joueurs — ELO plateforme</h3>
+          {topPlayersPlatform.map((p,i) => (
             <div key={p.id} className="flex items-center gap-3 py-3 border-b border-white/5" data-testid={`rank-player-${i}`}>
               <span className={`font-display text-2xl w-8 ${i<3 ? "text-yellow-neon" : "text-white/30"}`}>{i+1}</span>
               <span className="flex-1 font-display">{p.pseudo}{p.steam_verified && <Shield size={12} className="inline ml-2 text-cyan-400"/>}</span>
-              <span className="text-cyan-neon font-display">{p.elo}</span>
+              <span className="text-cyan-neon font-display">{formatMetric(p.platform_elo ?? p.elo)}</span>
+            </div>))}</div>
+        <div className="glass p-6"><h3 className="font-display text-xl uppercase mb-4">Top joueurs — FACEIT ELO</h3>
+          {topPlayersFaceit.map((p,i) => (
+            <div key={`${p.id}-faceit`} className="flex items-center gap-3 py-3 border-b border-white/5" data-testid={`rank-faceit-${i}`}>
+              <span className={`font-display text-2xl w-8 ${i<3 ? "text-yellow-neon" : "text-white/30"}`}>{i+1}</span>
+              <span className="flex-1 font-display">{p.pseudo}</span>
+              <span className="text-cyan-neon font-display">{formatMetric(p.faceit_elo)}</span>
+            </div>))}</div>
+        <div className="glass p-6"><h3 className="font-display text-xl uppercase mb-4">Top joueurs — K/D 30 jours</h3>
+          {topPlayersKdr.map((p,i) => (
+            <div key={`${p.id}-kdr`} className="flex items-center gap-3 py-3 border-b border-white/5" data-testid={`rank-kdr-${i}`}>
+              <span className={`font-display text-2xl w-8 ${i<3 ? "text-yellow-neon" : "text-white/30"}`}>{i+1}</span>
+              <span className="flex-1 font-display">{p.pseudo}</span>
+              <span className="text-yellow-neon font-display">{formatMetric(p.kdr, 2)}</span>
             </div>))}</div>
       </div>
     </div>
