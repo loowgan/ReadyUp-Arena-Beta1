@@ -317,6 +317,92 @@ const TeamLogo = ({ team, size = 48 }) => (
   </div>
 );
 
+const computeTeamMemberMvpScore = (member) => {
+  const elo = Number(member?.elo || 0);
+  const faceit = Number(member?.faceit_elo || 0);
+  const premier = Number(member?.premier_rating || 0);
+  const kdr = Number(member?.kdr || 0);
+  const reliability = Number(member?.reliability || 0);
+  let score = elo / 25 + faceit / 30 + premier / 350 + kdr * 140 + reliability * 1.6;
+  if (member?.team_role === "captain") score += 18;
+  if (member?.steam_verified) score += 8;
+  return score;
+};
+
+const resolveTeamMvp = (members = []) =>
+  [...members].sort((left, right) => computeTeamMemberMvpScore(right) - computeTeamMemberMvpScore(left))[0] || null;
+
+const TeamMemberPremiumCard = ({ member, teamColor, isMvp = false, compact = false, rank = null }) => (
+  <div
+    className={`relative overflow-hidden border ${isMvp ? "shadow-[0_0_40px_rgba(255,184,0,0.18)]" : "shadow-[0_0_24px_rgba(0,0,0,0.18)]"}`}
+    style={{
+      background: `linear-gradient(145deg, rgba(7,10,20,0.96) 0%, rgba(14,18,32,0.94) 58%, ${teamColor || "#FF4600"}22 100%)`,
+      borderColor: isMvp ? "rgba(255,184,0,0.5)" : `${teamColor || "#FF4600"}44`,
+    }}
+  >
+    <div className="absolute top-0 right-0 w-32 h-32 blur-3xl opacity-40" style={{ background: teamColor || "#FF4600" }}/>
+    <div className="relative p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-4">
+          <div
+            className="rounded-2xl overflow-hidden border border-white/10 bg-white/5 flex items-center justify-center font-display text-2xl"
+            style={{ width: compact ? 56 : 72, height: compact ? 56 : 72, minWidth: compact ? 56 : 72, boxShadow: `0 0 22px ${teamColor || "#FF4600"}33` }}
+          >
+            {member.avatar_url ? (
+              <img src={member.avatar_url} alt={member.pseudo} className="w-full h-full object-cover" />
+            ) : (
+              (member.pseudo || "P").slice(0, 1).toUpperCase()
+            )}
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {rank !== null && <span className="text-xs uppercase tracking-widest text-white/30">#{rank + 1}</span>}
+              {isMvp && <Badge variant="verified"><Crown size={12}/>MVP</Badge>}
+              {member.steam_verified && !isMvp && <Badge variant="verified"><Shield size={12}/>Steam</Badge>}
+            </div>
+            <div className="font-display text-2xl uppercase mt-2">{member.pseudo}</div>
+            <div className="text-xs uppercase tracking-[0.25em] text-white/45 mt-1">
+              {member.role || "Polyvalent"} • {member.team_role || "member"}
+            </div>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs uppercase tracking-widest text-white/35">Impact</div>
+          <div className={`font-display text-2xl mt-1 ${isMvp ? "text-yellow-neon" : "text-orange-500"}`}>
+            {Math.round(computeTeamMemberMvpScore(member))}
+          </div>
+        </div>
+      </div>
+
+      <div className={`grid ${compact ? "grid-cols-2" : "grid-cols-4"} gap-3 mt-5`}>
+        <div className="border border-white/10 p-3">
+          <div className="text-[10px] uppercase tracking-widest text-white/35">ELO</div>
+          <div className="font-display text-xl text-orange-500 mt-1">{formatMetric(member.elo)}</div>
+        </div>
+        <div className="border border-white/10 p-3">
+          <div className="text-[10px] uppercase tracking-widest text-white/35">FACEIT</div>
+          <div className="font-display text-xl text-cyan-neon mt-1">{formatMetric(member.faceit_elo)}</div>
+        </div>
+        <div className="border border-white/10 p-3">
+          <div className="text-[10px] uppercase tracking-widest text-white/35">Premier</div>
+          <div className="font-display text-xl text-red-400 mt-1">{formatPremierMetric(member.premier_rating)}</div>
+        </div>
+        <div className="border border-white/10 p-3">
+          <div className="text-[10px] uppercase tracking-widest text-white/35">K/D</div>
+          <div className="font-display text-xl text-green-400 mt-1">{formatMetric(member.kdr, 2)}</div>
+        </div>
+      </div>
+
+      <div className={`grid ${compact ? "grid-cols-2" : "grid-cols-4"} gap-3 mt-3`}>
+        <div className="text-xs text-white/55">LVL <span className="text-white">{formatMetric(member.level)}</span></div>
+        <div className="text-xs text-white/55">Fiabilité <span className="text-white">{formatMetric(member.reliability)}</span></div>
+        <div className="text-xs text-white/55">Rang <span className="text-white">{member.rank_cs2 || "—"}</span></div>
+        <div className="text-xs text-white/55">Statut <span className={`${member.online ? "text-green-400" : "text-white/50"}`}>{member.online ? "online" : "offline"}</span></div>
+      </div>
+    </div>
+  </div>
+);
+
 /* ============== HOME ============== */
 const Home = () => {
   const [tournaments, setTournaments] = useState([]);
@@ -1680,6 +1766,8 @@ const TeamsPage = () => {
   const authH = token ? { Authorization: `Bearer ${token}` } : {};
   const [teams, setTeams] = useState([]);
   const [myTeam, setMyTeam] = useState(null);
+  const [selectedTeamId, setSelectedTeamId] = useState(null);
+  const [selectedTeam, setSelectedTeam] = useState(null);
   const [applications, setApplications] = useState([]);
   const [teamForm, setTeamForm] = useState(makeTeamForm());
   const [applyTarget, setApplyTarget] = useState(null);
@@ -1731,6 +1819,34 @@ const TeamsPage = () => {
       setTeamForm(makeTeamForm());
     }
   }, [myTeam, isCaptain]);
+
+  useEffect(() => {
+    if (selectedTeamId && teams.some((team) => team.id === selectedTeamId)) {
+      return;
+    }
+    if (myTeam?.id) {
+      setSelectedTeamId(myTeam.id);
+      return;
+    }
+    if (teams[0]?.id) {
+      setSelectedTeamId(teams[0].id);
+    }
+  }, [myTeam?.id, selectedTeamId, teams]);
+
+  useEffect(() => {
+    if (!selectedTeamId) {
+      setSelectedTeam(null);
+      return;
+    }
+    if (myTeam?.id === selectedTeamId && myTeam?.members?.length) {
+      setSelectedTeam(myTeam);
+      return;
+    }
+    axios
+      .get(`${API}/teams/${selectedTeamId}`)
+      .then((response) => setSelectedTeam(response.data))
+      .catch(() => setSelectedTeam(null));
+  }, [myTeam, selectedTeamId]);
 
   const refreshAll = async () => {
     await refreshUser(token);
@@ -1814,6 +1930,10 @@ const TeamsPage = () => {
       setBusy(false);
     }
   };
+
+  const rosterMembers = selectedTeam?.members || [];
+  const rosterMvp = resolveTeamMvp(rosterMembers);
+  const rosterOthers = rosterMembers.filter((member) => `${member.id || member.pseudo}` !== `${rosterMvp?.id || rosterMvp?.pseudo}`);
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="teams-page">
@@ -1904,22 +2024,7 @@ const TeamsPage = () => {
               </div>
             )}
 
-            {myTeam?.members?.length > 0 && (
-              <div className="mt-6">
-                <div className="text-xs uppercase tracking-widest text-white/40 mb-3">Roster actuel</div>
-                <div className="space-y-2">
-                  {myTeam.members.map((member) => (
-                    <div key={`${member.source}-${member.id || member.pseudo}`} className="border border-white/10 p-3 flex items-center justify-between gap-3">
-                      <div>
-                        <div className="font-display uppercase">{member.pseudo}</div>
-                        <div className="text-xs text-white/40">{member.role} • {member.team_role}</div>
-                      </div>
-                      {member.steam_verified && <Badge variant="verified">Steam vérifié</Badge>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            {myTeam?.members?.length > 0 && <div className="mt-6 text-xs uppercase tracking-widest text-white/35">Roster premium visible plus bas dans la page.</div>}
           </div>
 
           <div className="glass p-6">
@@ -1959,9 +2064,67 @@ const TeamsPage = () => {
         </div>
       )}
 
+      {selectedTeam && (
+        <div className="mt-8" data-testid="team-roster-premium">
+          <SectionTitle sub="Roster Premium" title={`${selectedTeam.name} • MVP & lineup`} />
+          <div className="grid xl:grid-cols-[0.92fr_1.08fr] gap-6">
+            <div className="glass p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <TeamLogo team={selectedTeam} size={72} />
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Equipe selectionnee</div>
+                    <h2 className="font-display text-3xl uppercase mt-2">{selectedTeam.name}</h2>
+                    <p className="text-white/55 mt-2">{selectedTeam.tag} • {selectedTeam.country} • {selectedTeam.language || "FR"}</p>
+                  </div>
+                </div>
+                <Badge variant={selectedTeam.recruitment_status === "open" ? "soon" : "offline"}>
+                  {selectedTeam.recruitment_status === "open" ? "Recrutement ouvert" : "Recrutement ferme"}
+                </Badge>
+              </div>
+              <p className="text-white/60 mt-4">{selectedTeam.description || "Roster actif de la beta avec carte premium joueur et lecture rapide des impacts."}</p>
+              <div className="grid grid-cols-4 gap-3 mt-6">
+                <div className="border border-white/10 p-4"><div className="text-[10px] uppercase tracking-widest text-white/35">ELO</div><div className="font-display text-2xl text-orange-500 mt-1">{formatMetric(selectedTeam.elo)}</div></div>
+                <div className="border border-white/10 p-4"><div className="text-[10px] uppercase tracking-widest text-white/35">LVL</div><div className="font-display text-2xl mt-1">{formatMetric(selectedTeam.level)}</div></div>
+                <div className="border border-white/10 p-4"><div className="text-[10px] uppercase tracking-widest text-white/35">Membres</div><div className="font-display text-2xl mt-1">{selectedTeam.members_count}/{selectedTeam.members_limit}</div></div>
+                <div className="border border-white/10 p-4"><div className="text-[10px] uppercase tracking-widest text-white/35">Fiabilité</div><div className="font-display text-2xl text-cyan-neon mt-1">{formatMetric(selectedTeam.reliability)}</div></div>
+              </div>
+              <div className="mt-6">
+                <div className="text-xs uppercase tracking-[0.3em] text-yellow-neon mb-3">Joueur MVP</div>
+                {rosterMvp ? (
+                  <TeamMemberPremiumCard member={rosterMvp} teamColor={selectedTeam.logo_color} isMvp />
+                ) : (
+                  <div className="border border-white/10 p-5 text-white/40">Aucun joueur detaille pour cette equipe.</div>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="grid md:grid-cols-2 gap-4">
+                {rosterOthers.length === 0 && rosterMvp && (
+                  <div className="glass p-6 text-white/40 md:col-span-2">Le roster detaille contient uniquement le MVP pour le moment.</div>
+                )}
+                {rosterOthers.map((member, index) => (
+                  <TeamMemberPremiumCard
+                    key={`${member.source}-${member.id || member.pseudo}`}
+                    member={member}
+                    teamColor={selectedTeam.logo_color}
+                    compact
+                    rank={index + 1}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
         {teams.map((t,i) => (
-          <div key={t.id} className="glass glass-hover p-6" data-testid={`team-${t.id}`}>
+          <div
+            key={t.id}
+            className={`glass glass-hover p-6 ${selectedTeamId === t.id ? "ring-1 ring-orange-500/70" : ""}`}
+            data-testid={`team-${t.id}`}
+          >
             <div className="flex items-start justify-between"><TeamLogo team={t} size={64}/><span className="font-mono-display text-white/30">#{i+1}</span></div>
             <h3 className="font-display text-2xl mt-3">{t.name}</h3>
             <p className="text-white/40 text-sm">{t.tag} • {t.country}</p>
@@ -1977,6 +2140,9 @@ const TeamsPage = () => {
               <div>Membres: <span className="text-white/70">{t.members_count}/{t.members_limit}</span></div>
               <div>Recrutement: <span className="text-white/70">{t.recruitment_status === "open" ? "ouvert" : "ferme"}</span></div>
             </div>
+            <button onClick={() => setSelectedTeamId(t.id)} className="btn-ghost text-xs w-full mt-4">
+              <Star size={14}/>Voir le roster premium
+            </button>
             {token && !user?.team_id && t.recruitment_status === "open" && (
               <div className="mt-4">
                 {applyTarget === t.id ? (

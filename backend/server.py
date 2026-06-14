@@ -894,11 +894,48 @@ class TeamApplicationReq(BaseModel):
 async def _collect_team_members(team_id: str) -> list[dict]:
     user_members = await db.users.find(
         {"team_id": team_id},
-        {"_id": 0, "id": 1, "pseudo": 1, "country": 1, "role": 1, "steam_verified": 1, "team_role": 1},
+        {
+            "_id": 0,
+            "id": 1,
+            "pseudo": 1,
+            "country": 1,
+            "role": 1,
+            "steam_verified": 1,
+            "team_role": 1,
+            "level": 1,
+            "elo": 1,
+            "platform_elo": 1,
+            "faceit_elo": 1,
+            "premier_rating": 1,
+            "kdr": 1,
+            "reliability": 1,
+            "rank_cs2": 1,
+            "custom_avatar_url": 1,
+            "steam_avatar_url": 1,
+            "online": 1,
+        },
     ).to_list(30)
     player_members = await db.players.find(
         {"team_id": team_id},
-        {"_id": 0, "id": 1, "pseudo": 1, "country": 1, "role": 1, "steam_verified": 1, "online": 1},
+        {
+            "_id": 0,
+            "id": 1,
+            "pseudo": 1,
+            "country": 1,
+            "role": 1,
+            "steam_verified": 1,
+            "online": 1,
+            "level": 1,
+            "elo": 1,
+            "platform_elo": 1,
+            "faceit_elo": 1,
+            "premier_rating": 1,
+            "kdr": 1,
+            "reliability": 1,
+            "rank_cs2": 1,
+            "custom_avatar_url": 1,
+            "steam_avatar_url": 1,
+        },
     ).to_list(30)
 
     members: list[dict] = []
@@ -916,6 +953,15 @@ async def _collect_team_members(team_id: str) -> list[dict]:
             "steam_verified": bool(doc.get("steam_verified")),
             "team_role": doc.get("team_role") or "member",
             "source": "user",
+            "level": doc.get("level"),
+            "elo": doc.get("platform_elo", doc.get("elo")),
+            "faceit_elo": doc.get("faceit_elo"),
+            "premier_rating": doc.get("premier_rating"),
+            "kdr": _compute_kdr(doc),
+            "reliability": doc.get("reliability"),
+            "rank_cs2": doc.get("rank_cs2"),
+            "avatar_url": doc.get("custom_avatar_url") or doc.get("steam_avatar_url"),
+            "online": bool(doc.get("online", False)),
         })
     for doc in player_members:
         key = str(doc.get("id") or doc.get("pseudo") or uuid.uuid4())
@@ -930,6 +976,14 @@ async def _collect_team_members(team_id: str) -> list[dict]:
             "steam_verified": bool(doc.get("steam_verified")),
             "team_role": "seeded",
             "source": "seed",
+            "level": doc.get("level"),
+            "elo": doc.get("platform_elo", doc.get("elo")),
+            "faceit_elo": doc.get("faceit_elo"),
+            "premier_rating": doc.get("premier_rating"),
+            "kdr": _compute_kdr(doc),
+            "reliability": doc.get("reliability"),
+            "rank_cs2": doc.get("rank_cs2"),
+            "avatar_url": doc.get("custom_avatar_url") or doc.get("steam_avatar_url"),
             "online": bool(doc.get("online", False)),
         })
     return members
