@@ -226,6 +226,14 @@ const formatMetric = (value, digits = 0) => {
   return String(value);
 };
 
+const hasMetricValue = (value) => value !== null && value !== undefined && value !== "";
+
+const formatPercentMetric = (value, digits = 0) =>
+  hasMetricValue(value) ? `${Number(value).toFixed(digits)}%` : "â€”";
+
+const formatUnitMetric = (value, suffix, digits = 0) =>
+  hasMetricValue(value) ? `${Number(value).toFixed(digits)}${suffix}` : "â€”";
+
 const sortByMetric = (items, field) =>
   [...items].sort((a, b) => {
     const left = typeof a?.[field] === "number" ? a[field] : -Infinity;
@@ -963,7 +971,10 @@ const MatchRoom = () => (
 
 /* ============== PROFILE ============== */
 const Profile = () => {
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, token, setUser } = useAuth();
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncError, setSyncError] = useState("");
   const demoProfile = {
     pseudo: "Vortex",
     country: "FR",
@@ -982,6 +993,29 @@ const Profile = () => {
     steam_verified: true,
     reliability: 97,
     stats_last_sync_at: new Date().toISOString(),
+    stats_provider: "CSWAT",
+    stats_profile_url: "https://cswat.ch/stats/76561198000000000",
+    steam_profile_url: "https://steamcommunity.com/profiles/76561198000000000",
+    leetify_profile_url: "https://leetify.com/public/profile/76561198000000000",
+    faceit_profile_url: "https://www.faceit.com/en/players/readyupvortex",
+    faceit_nickname: "readyupvortex",
+    faceit_level: 10,
+    faceit_winrate: 57,
+    faceit_headshots: 46,
+    faceit_total_matches: 178,
+    faceit_kills_per_round: 0.79,
+    faceit_recent_matches: 20,
+    aim_rating: 74,
+    utility_rating: 69,
+    positioning_rating: 71,
+    opening_duels_rating: 1.8,
+    clutching_rating: 9.4,
+    stats_sources: {
+      platform: "ReadyUp Arena",
+      faceit: "CSWAT",
+      premier: "CSWAT",
+      kdr: "CSWAT",
+    },
   };
   const emptyProfile = {
     pseudo: "Player",
@@ -1001,17 +1035,79 @@ const Profile = () => {
     steam_verified: false,
     reliability: 50,
     stats_last_sync_at: null,
+    stats_provider: null,
+    stats_profile_url: null,
+    steam_profile_url: null,
+    leetify_profile_url: null,
+    faceit_profile_url: null,
+    faceit_nickname: null,
+    faceit_level: null,
+    faceit_winrate: null,
+    faceit_headshots: null,
+    faceit_total_matches: null,
+    faceit_kills_per_round: null,
+    faceit_recent_matches: null,
+    aim_rating: null,
+    utility_rating: null,
+    positioning_rating: null,
+    opening_duels_rating: null,
+    clutching_rating: null,
+    stats_sources: {},
   };
   const p = currentUser
     ? { ...emptyProfile, ...currentUser, xp_next: Math.max((currentUser.xp || 0) + 500, 1000) }
     : demoProfile;
   const xpPct = (p.xp / p.xp_next) * 100;
+  const handleSteamLink = () => { window.location.href = `${API}/auth/steam/login`; };
+  const syncStats = async () => {
+    if (!token) {
+      setSyncError("Connectez-vous avant de lancer la synchro.");
+      return;
+    }
+    if (!p.steam_verified) {
+      handleSteamLink();
+      return;
+    }
+    setSyncing(true);
+    setSyncMessage("");
+    setSyncError("");
+    try {
+      const response = await axios.post(`${API}/stats/sync/me`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      setUser(response.data);
+      setSyncMessage("Stats remplacees par le dernier snapshot public CSWAT/FACEIT disponible.");
+    } catch (err) {
+      setSyncError(err?.response?.data?.detail || "Synchronisation impossible pour le moment.");
+    } finally {
+      setSyncing(false);
+    }
+  };
   const statCards = [
-    { label: "ELO plateforme", value: formatMetric(p.platform_elo ?? p.elo), src: "ReadyUp Arena", state: "synced", color: "text-orange-500" },
-    { label: "Premier Rating", value: formatMetric(p.premier_rating), src: "Valve Premier", state: p.premier_rating ? "synced" : "indisponible", color: "text-red-500" },
-    { label: "FACEIT ELO", value: formatMetric(p.faceit_elo), src: "FACEIT", state: p.faceit_elo ? "synced" : "non lié", color: "text-cyan-neon" },
-    { label: "K/D Ratio (30j)", value: formatMetric(p.kdr, 2), src: "Historique de match", state: p.kdr !== null && p.kdr !== undefined ? "synced" : "indisponible", color: "text-yellow-neon" },
+    { label: "ELO plateforme", value: formatMetric(p.platform_elo ?? p.elo), src: p.stats_sources?.platform || "ReadyUp Arena", state: "synced", color: "text-orange-500" },
+    { label: "Premier Rating", value: formatMetric(p.premier_rating), src: p.stats_sources?.premier || "Valve Premier", state: hasMetricValue(p.premier_rating) ? "synced" : "indisponible", color: "text-red-500" },
+    { label: "FACEIT ELO", value: formatMetric(p.faceit_elo), src: p.stats_sources?.faceit || "FACEIT", state: hasMetricValue(p.faceit_elo) ? "synced" : "non lié", color: "text-cyan-neon" },
+    { label: "K/D sync", value: formatMetric(p.kdr, 2), src: p.stats_sources?.kdr || "Historique de match", state: hasMetricValue(p.kdr) ? "synced" : "indisponible", color: "text-yellow-neon" },
   ];
+  const hasFaceitDetails = [
+    p.faceit_level,
+    p.faceit_nickname,
+    p.faceit_winrate,
+    p.faceit_headshots,
+    p.faceit_total_matches,
+    p.faceit_kills_per_round,
+  ].some(hasMetricValue);
+  const hasPerformanceDetails = [
+    p.aim_rating,
+    p.utility_rating,
+    p.positioning_rating,
+    p.opening_duels_rating,
+    p.clutching_rating,
+  ].some(hasMetricValue);
+  const externalProfiles = [
+    { label: "Steam", href: p.steam_profile_url },
+    { label: "FACEIT", href: p.faceit_profile_url },
+    { label: "Leetify", href: p.leetify_profile_url },
+    { label: "CSWAT", href: p.stats_profile_url },
+  ].filter((item) => item.href);
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="profile-page">
       <div className="glass p-8 relative overflow-hidden">
@@ -1028,6 +1124,30 @@ const Profile = () => {
               <span className="text-white/50 text-sm">{p.country}</span>
             </div>
             <p className="text-white/50 mt-1">{p.role} • Rang CS2: {p.rank_cs2 || "Non renseigné"}</p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              {currentUser && (
+                p.steam_verified ? (
+                  <button onClick={syncStats} disabled={syncing} className="btn-ghost text-xs disabled:opacity-60" data-testid="profile-sync-stats-btn">
+                    <RefreshCw size={14} className={syncing ? "animate-spin" : ""}/>
+                    {syncing ? "Synchro..." : "Synchroniser mes stats"}
+                  </button>
+                ) : (
+                  <button onClick={handleSteamLink} className="btn-ghost text-xs" data-testid="profile-link-steam-btn">
+                    <Gamepad2 size={14}/>Lier Steam pour sync
+                  </button>
+                )
+              )}
+              {p.stats_profile_url && (
+                <a href={p.stats_profile_url} target="_blank" rel="noreferrer" className="btn-ghost text-xs" data-testid="profile-open-source-btn">
+                  <ExternalLink size={14}/>Voir la source
+                </a>
+              )}
+            </div>
+            {currentUser && (syncMessage || syncError) && (
+              <div className={`mt-3 text-sm ${syncError ? "text-red-400" : "text-cyan-neon"}`}>
+                {syncError || syncMessage}
+              </div>
+            )}
             <div className="mt-4">
               <div className="flex justify-between text-xs text-white/60 mb-1"><span>XP {p.xp}/{p.xp_next}</span><span>Niveau {p.level + 1} dans {p.xp_next - p.xp} XP</span></div>
               <div className="h-2 bg-white/5 overflow-hidden"><div className="h-full bg-gradient-to-r from-orange-500 to-red-500" style={{ width: `${xpPct}%`, boxShadow: "0 0 12px rgba(255,70,0,0.6)" }}/></div>
@@ -1049,6 +1169,66 @@ const Profile = () => {
             <div className="text-[10px] text-white/30 mt-2">Dernière synchro : {p.stats_last_sync_at ? new Date(p.stats_last_sync_at).toLocaleString("fr-FR") : "jamais"}</div>
           </div>))}
       </div>
+
+      {externalProfiles.length > 0 && (
+        <>
+          <SectionTitle sub="Profils liés" title="Sources externes"/>
+          <div className="flex flex-wrap gap-3">
+            {externalProfiles.map((item) => (
+              <a
+                key={item.label}
+                href={item.href}
+                target="_blank"
+                rel="noreferrer"
+                className="glass p-4 flex items-center gap-2 text-sm uppercase tracking-widest text-white/80 hover:text-white"
+              >
+                <ExternalLink size={14}/>{item.label}
+              </a>
+            ))}
+          </div>
+        </>
+      )}
+
+      {hasFaceitDetails && (
+        <>
+          <SectionTitle sub="FACEIT" title="Détails synchronisés"/>
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {[
+              { label: "FACEIT Level", value: formatMetric(p.faceit_level), accent: "text-cyan-neon" },
+              { label: "Pseudo FACEIT", value: p.faceit_nickname || "—", accent: "text-white" },
+              { label: "Winrate", value: formatPercentMetric(p.faceit_winrate, 0), accent: "text-green-400" },
+              { label: "Headshots", value: formatPercentMetric(p.faceit_headshots, 0), accent: "text-orange-500" },
+              { label: "Matchs FACEIT", value: formatMetric(p.faceit_total_matches), accent: "text-yellow-neon" },
+              { label: "Kills / round", value: formatUnitMetric(p.faceit_kills_per_round, "", 2), accent: "text-red-400" },
+            ].map((item) => (
+              <div key={item.label} className="glass p-6">
+                <div className="text-xs uppercase tracking-widest text-white/50">{item.label}</div>
+                <div className={`font-display text-4xl mt-2 ${item.accent}`}>{item.value}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {hasPerformanceDetails && (
+        <>
+          <SectionTitle sub="Leetify" title="Indices de performance"/>
+          <div className="grid md:grid-cols-2 xl:grid-cols-5 gap-4">
+            {[
+              { label: "Aim", value: formatMetric(p.aim_rating, 0), accent: "text-cyan-neon" },
+              { label: "Utility", value: formatMetric(p.utility_rating, 0), accent: "text-green-400" },
+              { label: "Positioning", value: formatMetric(p.positioning_rating, 0), accent: "text-orange-500" },
+              { label: "Opening", value: formatMetric(p.opening_duels_rating, 2), accent: "text-yellow-neon" },
+              { label: "Clutching", value: formatMetric(p.clutching_rating, 2), accent: "text-pink-400" },
+            ].map((item) => (
+              <div key={item.label} className="glass p-6">
+                <div className="text-xs uppercase tracking-widest text-white/50">{item.label}</div>
+                <div className={`font-display text-4xl mt-2 ${item.accent}`}>{item.value}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <SectionTitle sub="Récompenses" title="Badges & Trophées"/>
       <div className="flex flex-wrap gap-3">

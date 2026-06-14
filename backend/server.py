@@ -1,7 +1,7 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import asyncio, json, time
+import asyncio, html, json, re, time
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -110,6 +110,24 @@ class UserPublic(BaseModel):
     role: Optional[str] = None
     reliability: int = 50
     stats_last_sync_at: Optional[str] = None
+    stats_provider: Optional[str] = None
+    stats_profile_url: Optional[str] = None
+    stats_sources: dict[str, Optional[str]] = Field(default_factory=dict)
+    steam_profile_url: Optional[str] = None
+    leetify_profile_url: Optional[str] = None
+    faceit_profile_url: Optional[str] = None
+    faceit_nickname: Optional[str] = None
+    faceit_level: Optional[int] = None
+    faceit_winrate: Optional[float] = None
+    faceit_headshots: Optional[float] = None
+    faceit_total_matches: Optional[int] = None
+    faceit_kills_per_round: Optional[float] = None
+    faceit_recent_matches: Optional[int] = None
+    aim_rating: Optional[float] = None
+    utility_rating: Optional[float] = None
+    positioning_rating: Optional[float] = None
+    opening_duels_rating: Optional[float] = None
+    clutching_rating: Optional[float] = None
     steam_verified: bool
     created_at: str
     is_admin: bool = False
@@ -151,11 +169,12 @@ def _compute_kdr(doc: dict) -> Optional[float]:
 
 
 def _stats_sources(doc: dict) -> dict:
+    provider = doc.get("stats_provider")
     return {
         "platform": "ReadyUp Arena",
-        "faceit": "FACEIT" if doc.get("faceit_elo") is not None else None,
-        "premier": "Valve Premier" if doc.get("premier_rating") is not None else None,
-        "kdr": "CS gameplay sample" if _compute_kdr(doc) is not None else None,
+        "faceit": (provider or "FACEIT") if doc.get("faceit_elo") is not None else None,
+        "premier": (provider or "Valve Premier") if doc.get("premier_rating") is not None else None,
+        "kdr": (provider or "CS gameplay sample") if _compute_kdr(doc) is not None else None,
     }
 
 
@@ -173,6 +192,23 @@ def _public_stats_payload(doc: dict) -> dict:
         "role": doc.get("role"),
         "reliability": int(doc.get("reliability", 50)),
         "stats_last_sync_at": doc.get("stats_last_sync_at"),
+        "stats_provider": doc.get("stats_provider"),
+        "stats_profile_url": doc.get("stats_profile_url"),
+        "steam_profile_url": doc.get("steam_profile_url"),
+        "leetify_profile_url": doc.get("leetify_profile_url"),
+        "faceit_profile_url": doc.get("faceit_profile_url"),
+        "faceit_nickname": doc.get("faceit_nickname"),
+        "faceit_level": doc.get("faceit_level"),
+        "faceit_winrate": doc.get("faceit_winrate"),
+        "faceit_headshots": doc.get("faceit_headshots"),
+        "faceit_total_matches": doc.get("faceit_total_matches"),
+        "faceit_kills_per_round": doc.get("faceit_kills_per_round"),
+        "faceit_recent_matches": doc.get("faceit_recent_matches"),
+        "aim_rating": doc.get("aim_rating"),
+        "utility_rating": doc.get("utility_rating"),
+        "positioning_rating": doc.get("positioning_rating"),
+        "opening_duels_rating": doc.get("opening_duels_rating"),
+        "clutching_rating": doc.get("clutching_rating"),
         "stats_sources": _stats_sources(doc),
     }
 
@@ -246,6 +282,200 @@ async def login(req: LoginReq, request: Request):
 @api_router.get("/auth/me", response_model=UserPublic)
 async def me(user=Depends(get_current_user)):
     return user_to_public(user)
+
+
+EXTERNAL_STATS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,fr;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
+SYNC_MANAGED_FIELDS = (
+    "faceit_elo",
+    "premier_rating",
+    "kills_30d",
+    "deaths_30d",
+    "kdr",
+    "stats_provider",
+    "stats_profile_url",
+    "steam_profile_url",
+    "leetify_profile_url",
+    "faceit_profile_url",
+    "faceit_nickname",
+    "faceit_level",
+    "faceit_winrate",
+    "faceit_headshots",
+    "faceit_total_matches",
+    "faceit_kills_per_round",
+    "faceit_recent_matches",
+    "aim_rating",
+    "utility_rating",
+    "positioning_rating",
+    "opening_duels_rating",
+    "clutching_rating",
+)
+
+
+def _managed_stats_defaults() -> dict:
+    return {field: None for field in SYNC_MANAGED_FIELDS}
+
+
+def _coerce_int(value) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(round(value))
+    cleaned = re.sub(r"[^\d\-]", "", str(value))
+    if cleaned in {"", "-"}:
+        return None
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
+
+
+def _coerce_float(value) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return round(float(value), 2)
+    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value))
+    if not match:
+        return None
+    try:
+        return round(float(match.group(0).replace(",", ".")), 2)
+    except ValueError:
+        return None
+
+
+def _extract_cswat_object(raw_html: str, needle: str) -> Optional[dict]:
+    idx = raw_html.find(needle)
+    if idx == -1:
+        return None
+    start = raw_html.rfind("{", 0, idx)
+    if start == -1:
+        return None
+    depth = 0
+    for pos in range(start, len(raw_html)):
+        char = raw_html[pos]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                snippet = html.unescape(raw_html[start:pos + 1]).replace('\\"', '"')
+                try:
+                    return json.loads(snippet)
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
+    updates = _managed_stats_defaults()
+    updates["stats_provider"] = "CSWAT"
+    updates["stats_profile_url"] = f"https://cswat.ch/stats/{steam_id}"
+    updates["leetify_profile_url"] = f"https://leetify.com/public/profile/{steam_id}"
+
+    steam_wrapper = _extract_cswat_object(raw_html, "steamData")
+    steam_data = (steam_wrapper or {}).get("steamData") or {}
+    if steam_data.get("profileurl"):
+        updates["steam_profile_url"] = steam_data.get("profileurl")
+
+    faceit_wrapper = _extract_cswat_object(raw_html, "faceitData")
+    faceit_data = (faceit_wrapper or {}).get("faceitData") or {}
+    if faceit_data.get("success"):
+        cs2_game = ((faceit_data.get("game") or {}).get("cs2") or {})
+        cs2_recent = ((faceit_data.get("recentStats") or {}).get("cs2") or {})
+        nickname = faceit_data.get("nickname")
+        recent_kdr = _coerce_float(cs2_recent.get("averageKDRatio"))
+        all_time_kdr = _coerce_float(cs2_game.get("average_kd_ratio"))
+        updates.update({
+            "faceit_elo": _coerce_int(cs2_game.get("elo")),
+            "faceit_nickname": nickname,
+            "faceit_level": _coerce_int(cs2_game.get("level")),
+            "faceit_profile_url": f"https://www.faceit.com/en/players/{nickname}" if nickname else None,
+            "faceit_winrate": _coerce_float(cs2_recent.get("winrate")) or _coerce_float(cs2_game.get("win_rate")),
+            "faceit_headshots": _coerce_float(cs2_recent.get("averageHeadshotPercent")) or _coerce_float(cs2_game.get("average_headshots")),
+            "faceit_total_matches": _coerce_int(cs2_game.get("matches")) or _coerce_int(cs2_recent.get("totalMatches")),
+            "faceit_kills_per_round": _coerce_float(cs2_recent.get("averageKRRatio")),
+            "faceit_recent_matches": _coerce_int(cs2_recent.get("totalMatches")),
+            "kdr": recent_kdr if recent_kdr is not None else all_time_kdr,
+        })
+
+    leetify_wrapper = _extract_cswat_object(raw_html, "leetifyProfile")
+    leetify_data = (leetify_wrapper or {}).get("leetifyProfile") or {}
+    leetify_ratings = (leetify_data.get("rating") or {})
+    leetify_ranks = (leetify_data.get("ranks") or {})
+    if leetify_data.get("success") and not leetify_data.get("error"):
+        if updates.get("kdr") is None:
+            updates["kdr"] = _coerce_float(leetify_data.get("kill_death_ratio"))
+        updates.update({
+            "premier_rating": _coerce_int((leetify_wrapper or {}).get("premierRank")) or _coerce_int(leetify_ranks.get("premier")),
+            "aim_rating": _coerce_float(leetify_ratings.get("aim")),
+            "utility_rating": _coerce_float(leetify_ratings.get("utility")),
+            "positioning_rating": _coerce_float(leetify_ratings.get("positioning")),
+            "opening_duels_rating": _coerce_float(leetify_ratings.get("opening")),
+            "clutching_rating": _coerce_float(leetify_ratings.get("clutch")),
+        })
+
+    has_any_stats = any(
+        updates.get(field) is not None
+        for field in (
+            "faceit_elo",
+            "faceit_level",
+            "kdr",
+            "premier_rating",
+            "aim_rating",
+            "utility_rating",
+            "positioning_rating",
+            "opening_duels_rating",
+            "clutching_rating",
+            "steam_profile_url",
+        )
+    )
+    if not has_any_stats:
+        raise ValueError("Aucune statistique publique exploitable trouvée pour ce Steam ID.")
+
+    return updates
+
+
+async def _fetch_external_stats_for_steam_id(steam_id: str) -> dict:
+    profile_url = f"https://cswat.ch/stats/{steam_id}"
+    async with httpx.AsyncClient(headers=EXTERNAL_STATS_HEADERS, follow_redirects=True, timeout=20) as client_http:
+        response = await client_http.get(profile_url)
+    if response.status_code >= 400:
+        raise RuntimeError(f"CSWAT a répondu {response.status_code}")
+    return _parse_cswat_stats(response.text, steam_id)
+
+
+@api_router.post("/stats/sync/me", response_model=UserPublic)
+async def sync_my_stats(user=Depends(get_current_user)):
+    steam_id = (user.get("steam_id") or "").strip()
+    if not steam_id or not steam_id.isdigit():
+        raise HTTPException(400, "Compte Steam non lié. Connectez-vous avec Steam avant la synchro.")
+
+    try:
+        updates = await _fetch_external_stats_for_steam_id(steam_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        logger.warning("external stats sync failed for steam_id=%s: %s", steam_id, exc)
+        raise HTTPException(502, "Impossible de synchroniser les stats externes pour le moment.")
+
+    updates["stats_last_sync_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": user["id"]}, {"$set": updates})
+    updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
+    await journal("stats_sync", user["id"], {"steam_id": steam_id, "provider": updates.get("stats_provider")})
+    return user_to_public(updated_user)
 
 @api_router.post("/auth/logout")
 async def logout(user=Depends(get_current_user)):

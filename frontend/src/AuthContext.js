@@ -9,10 +9,20 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState(() => localStorage.getItem("ru_token"));
 
+  const refreshUser = async (nextToken = token) => {
+    if (!nextToken) {
+      setUser(null);
+      return null;
+    }
+    const response = await axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${nextToken}` } });
+    setUser(response.data);
+    return response.data;
+  };
+
   useEffect(() => {
     if (!token) { setLoading(false); return; }
     axios.get(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => setUser(r.data))
+      .then((response) => setUser(response.data))
       .catch(() => { localStorage.removeItem("ru_token"); setToken(null); })
       .finally(() => setLoading(false));
   }, [token]);
@@ -33,7 +43,7 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem("ru_token"); setToken(null); setUser(null);
   };
 
-  return <AuthCtx.Provider value={{ user, token, loading, login, register, logout }}>{children}</AuthCtx.Provider>;
+  return <AuthCtx.Provider value={{ user, token, loading, login, register, logout, refreshUser, setUser }}>{children}</AuthCtx.Provider>;
 };
 
 export const useAuth = () => useContext(AuthCtx);
