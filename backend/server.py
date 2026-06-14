@@ -387,6 +387,9 @@ def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
 
     steam_wrapper = _extract_cswat_object(raw_html, "steamData")
     steam_data = (steam_wrapper or {}).get("steamData") or {}
+    steam_name = str(steam_data.get("name") or "").strip()
+    if steam_name:
+        updates["_steam_display_name"] = steam_name[:24]
     if steam_data.get("profileurl"):
         updates["steam_profile_url"] = steam_data.get("profileurl")
 
@@ -471,6 +474,13 @@ async def sync_my_stats(user=Depends(get_current_user)):
         logger.warning("external stats sync failed for steam_id=%s: %s", steam_id, exc)
         raise HTTPException(502, "Impossible de synchroniser les stats externes pour le moment.")
 
+    steam_display_name = updates.pop("_steam_display_name", None)
+    if steam_display_name:
+        taken = await db.users.find_one(
+            {"pseudo": steam_display_name, "id": {"$ne": user["id"]}},
+            {"_id": 0, "id": 1},
+        )
+        updates["pseudo"] = steam_display_name if not taken else f"{steam_display_name[:19]}_{steam_id[-4:]}"
     updates["stats_last_sync_at"] = datetime.now(timezone.utc).isoformat()
     await db.users.update_one({"id": user["id"]}, {"$set": updates})
     updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
