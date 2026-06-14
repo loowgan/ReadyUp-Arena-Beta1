@@ -1469,6 +1469,17 @@ async def global_stats():
         "donations_received": donations_count,
     }
 
+
+class MatchReportReq(BaseModel):
+    kind: str = Field(pattern="^(technical|pause|behavior|absence|score|cheat|other)$")
+    message: str = Field(min_length=3, max_length=500)
+    round_label: Optional[str] = Field(default=None, max_length=40)
+
+
+class MatchReportStatusReq(BaseModel):
+    status: str = Field(pattern="^(open|acknowledged|resolved|rejected)$")
+    resolution_note: Optional[str] = Field(default=None, max_length=500)
+
 @api_router.get("/twitch/live")
 async def twitch_live():
     ch = os.environ.get("TWITCH_CHANNEL", "esl_csgo")
@@ -1792,8 +1803,74 @@ async def match_detail(matchid: str):
     latest: dict = {}
     for e in events:
         _merge_latest(latest, _extract_score(e.get("payload") or {}))
-    return {"matchid": str(matchid), "summary": latest,
-            "ended": any(e["event"] == "series_end" for e in events), "timeline": events}
+    server = await db.cs2_servers.find_one({"current_match_id": str(matchid)}, {"_id": 0, "rcon_password": 0})
+    return {
+        "matchid": str(matchid),
+        "summary": latest,
+        "ended": any(e["event"] == "series_end" for e in events),
+        "timeline": events,
+        "server": server,
+    }
+
+
+@api_router.get("/matches/{matchid}/reports", dependencies=[Depends(get_current_user)])
+async def list_match_reports(matchid: str, user=Depends(get_current_user)):
+    docs = await db.match_reports.find({"match_id": str(matchid)}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return docs
+
+
+@api_router.post("/matches/{matchid}/reports", dependencies=[Depends(get_current_user)])
+async def create_match_report(matchid: str, req: MatchReportReq, user=Depends(get_current_user)):
+    exists = await db.matchzy_events.find_one({"matchid": str(matchid)}, {"_id": 1})
+    if not exists:
+        all_events = await db.matchzy_events.find({}, {"_id": 0, "matchid": 1}).limit(2000).to_list(2000)
+        if not any(str(doc.get("matchid")) == str(matchid) for doc in all_events):
+            raise HTTPException(404, "Match introuvable")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    report = {
+        "id": str(uuid.uuid4()),
+        "match_id": str(matchid),
+        "kind": req.kind,
+        "message": req.message.strip(),
+        "round_label": (req.round_label or "").strip() or None,
+        "status": "open",
+        "reporter_user_id": user["id"],
+        "reporter_pseudo": user["pseudo"],
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    await db.match_reports.insert_one(report)
+    await journal("match_report_created", user["id"], {"match_id": str(matchid), "kind": req.kind})
+    return report
+
+
+@api_router.get("/admin/matches/reports", dependencies=[Depends(get_admin_user)])
+async def admin_list_match_reports(status_f: Optional[str] = None, limit: int = 100):
+    query = {}
+    if status_f:
+        query["status"] = status_f
+    safe_limit = max(1, min(limit, 300))
+    return await db.match_reports.find(query, {"_id": 0}).sort("created_at", -1).to_list(safe_limit)
+
+
+@api_router.patch("/admin/matches/reports/{report_id}", dependencies=[Depends(get_admin_user)])
+async def admin_update_match_report(report_id: str, req: MatchReportStatusReq, admin=Depends(get_admin_user)):
+    existing = await db.match_reports.find_one({"id": report_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Signalement introuvable")
+
+    updates = {
+        "status": req.status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "handled_by": admin["id"],
+        "handled_by_pseudo": admin["pseudo"],
+    }
+    if req.resolution_note is not None:
+        updates["resolution_note"] = req.resolution_note.strip()
+    await db.match_reports.update_one({"id": report_id}, {"$set": updates})
+    await journal("match_report_updated", admin["id"], {"report_id": report_id, "status": req.status})
+    return {"ok": True, "id": report_id, "status": req.status}
 
 app.include_router(api_router)
 

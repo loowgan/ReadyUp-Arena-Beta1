@@ -240,6 +240,52 @@ const formatPercentMetric = (value, digits = 0) =>
 const formatUnitMetric = (value, suffix, digits = 0) =>
   hasMetricValue(value) ? `${Number(value).toFixed(digits)}${suffix}` : "â€”";
 
+const MATCH_REPORT_LABELS = {
+  technical: "Technique",
+  pause: "Pause",
+  behavior: "Comportement",
+  absence: "Absence",
+  score: "Score",
+  cheat: "Suspicion",
+  other: "Autre",
+};
+
+const MATCH_REPORT_STATUS_LABELS = {
+  open: "ouvert",
+  acknowledged: "pris en compte",
+  resolved: "resolu",
+  rejected: "rejete",
+};
+
+const MATCH_EVENT_LABELS = {
+  series_start: "Debut de serie",
+  series_end: "Fin de serie",
+  map_result: "Resultat de map",
+  map_start: "Debut de map",
+  round_end: "Fin de round",
+  player_kill: "Kill",
+  bomb_planted: "Bombe posee",
+  bomb_defused: "Bombe desamorcee",
+};
+
+const formatMatchEventLabel = (value) => {
+  if (!value) return "Evenement";
+  if (MATCH_EVENT_LABELS[value]) return MATCH_EVENT_LABELS[value];
+  return String(value)
+    .split("_")
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ");
+};
+
+const matchReportStatusClass = (status) =>
+  ({
+    open: "bg-red-500/20 text-red-300 border-red-500/30",
+    acknowledged: "bg-yellow-500/20 text-yellow-200 border-yellow-500/30",
+    resolved: "bg-cyan-500/20 text-cyan-200 border-cyan-500/30",
+    rejected: "bg-white/10 text-white/60 border-white/10",
+  }[status] || "bg-white/10 text-white/60 border-white/10");
+
 const sortByMetric = (items, field) =>
   [...items].sort((a, b) => {
     const left = typeof a?.[field] === "number" ? a[field] : -Infinity;
@@ -951,29 +997,258 @@ const BracketDraw = () => {
 };
 
 /* ============== MATCH ROOM ============== */
-const MatchRoom = () => (
-  <div className="max-w-7xl mx-auto px-6 py-10" data-testid="match-room">
-    <Badge variant="live">EN COURS</Badge>
-    <h1 className="font-display text-4xl uppercase mt-3">Nova Strike vs Pixel Reapers</h1>
-    <p className="text-white/50">BO3 • Mirage / Inferno / Anubis</p>
-    <div className="glass p-8 mt-6 text-center">
-      <div className="grid grid-cols-3 items-center">
-        <div><div className="font-display text-2xl">Nova Strike</div><div className="font-display text-7xl text-orange-500 mt-2">13</div></div>
-        <div className="text-white/40 font-display uppercase">Round 24 — Mirage</div>
-        <div><div className="font-display text-2xl">Pixel Reapers</div><div className="font-display text-7xl text-cyan-neon mt-2">11</div></div>
+const MatchRoom = () => {
+  const { id } = useParams();
+  const { token } = useAuth();
+  const [detail, setDetail] = useState(null);
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [reportMessage, setReportMessage] = useState("");
+  const [reportError, setReportError] = useState("");
+  const [reportForm, setReportForm] = useState({ kind: "technical", message: "", round_label: "" });
+
+  useEffect(() => {
+    let active = true;
+
+    const load = async (withSpinner = false) => {
+      if (withSpinner) setLoading(true);
+      try {
+        const detailPromise = axios.get(`${API}/matches/${id}`);
+        const reportsPromise = token
+          ? axios
+              .get(`${API}/matches/${id}/reports`, { headers: { Authorization: `Bearer ${token}` } })
+              .then((response) => response.data)
+              .catch(() => [])
+          : Promise.resolve([]);
+        const [detailResponse, reportsData] = await Promise.all([detailPromise, reportsPromise]);
+        if (!active) return;
+        setDetail(detailResponse.data);
+        setReports(reportsData || []);
+        setError("");
+      } catch (loadError) {
+        if (!active) return;
+        setError(loadError?.response?.data?.detail || "Match introuvable pour le moment.");
+      } finally {
+        if (active && withSpinner) setLoading(false);
+      }
+    };
+
+    load(true);
+    const interval = setInterval(() => load(false), 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [id, token]);
+
+  const submitReport = async (event) => {
+    event.preventDefault();
+    if (!token) {
+      setReportError("Connectez-vous pour signaler un incident.");
+      return;
+    }
+    setSubmitting(true);
+    setReportMessage("");
+    setReportError("");
+    try {
+      await axios.post(`${API}/matches/${id}/reports`, reportForm, { headers: { Authorization: `Bearer ${token}` } });
+      const reportsResponse = await axios.get(`${API}/matches/${id}/reports`, { headers: { Authorization: `Bearer ${token}` } });
+      setReports(reportsResponse.data || []);
+      setReportForm({ kind: reportForm.kind, message: "", round_label: "" });
+      setReportMessage("Signalement transmis au back-office.");
+    } catch (submitError) {
+      setReportError(submitError?.response?.data?.detail || "Signalement impossible pour le moment.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const summary = detail?.summary || {};
+  const timeline = [...(detail?.timeline || [])].slice(-12).reverse();
+  const latestEventAt = detail?.timeline?.length ? detail.timeline[detail.timeline.length - 1]?.received_at : null;
+  const openReports = reports.filter((item) => item.status === "open" || item.status === "acknowledged").length;
+  const server = detail?.server;
+
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto px-6 py-10" data-testid="match-room-loading">
+        <div className="glass p-8 text-white/50">Chargement de la room de match…</div>
+      </div>
+    );
+  }
+
+  if (error && !detail) {
+    return (
+      <div className="max-w-7xl mx-auto px-6 py-10" data-testid="match-room-error">
+        <div className="glass p-8 border border-red-500/30 text-red-300">{error}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="match-room">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <Badge variant={detail?.ended ? "offline" : "live"}>{detail?.ended ? "TERMINE" : "EN COURS"}</Badge>
+          <h1 className="font-display text-4xl uppercase mt-3">
+            {summary.team1_name || "Team 1"} vs {summary.team2_name || "Team 2"}
+          </h1>
+          <p className="text-white/50 mt-2">
+            Match ID {id} • map {summary.map_name || "—"} • dernier event {latestEventAt ? new Date(latestEventAt).toLocaleString("fr-FR") : "—"}
+          </p>
+        </div>
+        <button
+          onClick={() => window.location.reload()}
+          className="btn-ghost"
+          data-testid="match-refresh-btn"
+        >
+          <RefreshCw size={14}/>Actualiser
+        </button>
+      </div>
+
+      <div className="glass p-8 mt-6 text-center">
+        <div className="grid grid-cols-3 items-center gap-4">
+          <div>
+            <div className="font-display text-2xl">{summary.team1_name || "Team 1"}</div>
+            <div className="font-display text-7xl text-orange-500 mt-2">{summary.team1_score ?? 0}</div>
+          </div>
+          <div className="text-white/40 font-display uppercase tracking-widest">
+            {detail?.ended ? "Serie terminee" : "Match live"}
+            <div className="text-sm text-white/30 mt-2">Map #{summary.map_number || 1} • {summary.map_name || "—"}</div>
+          </div>
+          <div>
+            <div className="font-display text-2xl">{summary.team2_name || "Team 2"}</div>
+            <div className="font-display text-7xl text-cyan-neon mt-2">{summary.team2_score ?? 0}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid xl:grid-cols-[1.15fr_0.85fr] gap-6 mt-6">
+        <div className="space-y-6">
+          <div className="glass p-6">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="font-display uppercase">Serveur et orchestration</h3>
+              <Badge variant={server?.status === "live" ? "live" : "default"}>{server?.status || "non assigne"}</Badge>
+            </div>
+            <div className="grid md:grid-cols-2 gap-4 mt-4 text-sm text-white/70">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/40">Serveur</div>
+                <div className="mt-2">{server?.name || "Affectation en cours"}</div>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/40">Connexion</div>
+                <div className="mt-2">{server?.host ? `${server.host}:${server.port}` : "Masquee / non disponible"}</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 mt-5">
+              <button onClick={() => setReportForm((prev) => ({ ...prev, kind: "technical" }))} className="btn-ghost text-xs" data-testid="report-btn">
+                <AlertTriangle size={12}/>Signaler
+              </button>
+              <button onClick={() => setReportForm((prev) => ({ ...prev, kind: "pause", message: prev.kind === "pause" ? prev.message : "Demande de pause technique" }))} className="btn-ghost text-xs" data-testid="pause-btn">
+                <Clock size={12}/>Demander pause
+              </button>
+              <Link to="/live" className="btn-ghost text-xs">
+                <Radio size={12}/>Retour aux matchs live
+              </Link>
+            </div>
+          </div>
+
+          <div className="glass p-6">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="font-display uppercase">Timeline MatchZy</h3>
+              <span className="text-xs uppercase tracking-widest text-white/40">{detail?.timeline?.length || 0} evenements</span>
+            </div>
+            <div className="space-y-3 mt-5">
+              {timeline.length === 0 && <div className="text-white/40">Aucun evenement exploitable pour ce match.</div>}
+              {timeline.map((eventItem, index) => (
+                <div key={`${eventItem.received_at || "event"}-${index}`} className="border border-white/5 rounded-xl p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="font-display uppercase text-sm">{formatMatchEventLabel(eventItem.event)}</div>
+                    <div className="text-xs text-white/40">{eventItem.received_at ? new Date(eventItem.received_at).toLocaleString("fr-FR") : "—"}</div>
+                  </div>
+                  <div className="text-sm text-white/60 mt-2">
+                    {eventItem.payload?.team1?.name || eventItem.payload?.team2?.name
+                      ? `${eventItem.payload?.team1?.name || summary.team1_name || "Team 1"} ${eventItem.payload?.team1?.score ?? summary.team1_score ?? 0} - ${eventItem.payload?.team2?.score ?? summary.team2_score ?? 0} ${eventItem.payload?.team2?.name || summary.team2_name || "Team 2"}`
+                      : "Evenement recu et journalise par le backend."}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="glass p-6">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="font-display uppercase">Signalements live</h3>
+              <Badge variant={openReports > 0 ? "soon" : "verified"}>{openReports} actif(s)</Badge>
+            </div>
+            {!token ? (
+              <div className="text-white/60 mt-4">
+                Connectez-vous pour remonter un incident de match.
+                <div className="mt-4">
+                  <Link to="/login" className="btn-neon">Se connecter</Link>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={submitReport} className="space-y-3 mt-5">
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Type d'incident</label>
+                  <select value={reportForm.kind} onChange={(event) => setReportForm({ ...reportForm, kind: event.target.value })} data-testid="match-report-kind">
+                    {Object.entries(MATCH_REPORT_LABELS).map(([key, label]) => (
+                      <option key={key} value={key}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Round / contexte</label>
+                  <input value={reportForm.round_label} onChange={(event) => setReportForm({ ...reportForm, round_label: event.target.value })} placeholder="Ex: Round 18 / overtime" maxLength={40} />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Description</label>
+                  <textarea value={reportForm.message} onChange={(event) => setReportForm({ ...reportForm, message: event.target.value })} placeholder="Explique le problème rencontré" rows={4} minLength={3} maxLength={500} required />
+                </div>
+                {reportError && <div className="text-sm text-red-300">{reportError}</div>}
+                {reportMessage && <div className="text-sm text-cyan-neon">{reportMessage}</div>}
+                <button disabled={submitting} className="btn-neon w-full" data-testid="match-report-submit">
+                  <AlertTriangle size={14}/>{submitting ? "Envoi..." : "Envoyer le signalement"}
+                </button>
+              </form>
+            )}
+          </div>
+
+          <div className="glass p-6">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="font-display uppercase">Derniers incidents</h3>
+              <span className="text-xs uppercase tracking-widest text-white/40">{reports.length} total</span>
+            </div>
+            <div className="space-y-3 mt-5">
+              {reports.length === 0 && <div className="text-white/40">Aucun signalement enregistre sur ce match.</div>}
+              {reports.slice(0, 8).map((item) => (
+                <div key={item.id} className="border border-white/5 rounded-xl p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="font-display text-sm uppercase">{MATCH_REPORT_LABELS[item.kind] || item.kind}</div>
+                      <div className="text-xs text-white/40 mt-1">{item.reporter_pseudo} • {new Date(item.created_at).toLocaleString("fr-FR")}</div>
+                    </div>
+                    <div className={`px-3 py-1 border text-xs uppercase tracking-widest rounded-full ${matchReportStatusClass(item.status)}`}>
+                      {MATCH_REPORT_STATUS_LABELS[item.status] || item.status}
+                    </div>
+                  </div>
+                  {item.round_label && <div className="text-xs text-white/40 mt-3">{item.round_label}</div>}
+                  <p className="text-sm text-white/70 mt-2">{item.message}</p>
+                  {item.resolution_note && <p className="text-xs text-white/40 mt-3">Resolution: {item.resolution_note}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
-    <div className="grid md:grid-cols-2 gap-4 mt-6">
-      <div className="glass p-6"><h3 className="font-display uppercase mb-3">Serveur</h3><p className="text-white/60 text-sm">EU-FR-01 • 64 tick • MatchZy 2.4.1</p><p className="text-xs text-white/40 mt-2">connect 185.x.x.x:27015</p></div>
-      <div className="glass p-6"><h3 className="font-display uppercase mb-3">Actions arbitre</h3>
-        <div className="flex gap-2 flex-wrap">
-          <button className="btn-ghost text-xs" data-testid="report-btn"><AlertTriangle size={12}/>Signaler</button>
-          <button className="btn-ghost text-xs"><Clock size={12}/>Demander pause</button>
-          <button className="btn-ghost text-xs">Soumettre score</button>
-        </div></div>
-    </div>
-  </div>
-);
+  );
+};
 
 /* ============== PROFILE ============== */
 const Profile = () => {
@@ -2931,6 +3206,84 @@ const RewardAdmin = () => {
   );
 };
 
+const MatchReportsAdmin = () => {
+  const { token } = useAuth();
+  const [reports, setReports] = useState([]);
+  const [busyId, setBusyId] = useState(null);
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+
+  const load = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/matches/reports?limit=50`, { headers: authH });
+      setReports(response.data || []);
+    } catch {
+      setReports([]);
+    }
+  };
+
+  useEffect(() => {
+    if (!token) {
+      setReports([]);
+      return;
+    }
+    axios
+      .get(`${API}/admin/matches/reports?limit=50`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((response) => setReports(response.data || []))
+      .catch(() => setReports([]));
+  }, [token]);
+
+  const updateStatus = async (reportId, status) => {
+    const resolution_note = window.prompt("Note de traitement (optionnelle) :", "") ?? "";
+    setBusyId(reportId);
+    try {
+      await axios.patch(`${API}/admin/matches/reports/${reportId}`, { status, resolution_note }, { headers: authH });
+      await load();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur signalement");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const openCount = reports.filter((item) => item.status === "open").length;
+
+  return (
+    <div data-testid="match-reports-admin">
+      <SectionTitle sub="Arbitrage live" title="Signalements de match"/>
+      <div className="glass p-6 mb-4">
+        <div className="text-xs uppercase tracking-widest text-white/40">Incidents ouverts</div>
+        <div className="font-display text-4xl text-red-400 mt-2">{openCount}</div>
+      </div>
+      <div className="space-y-4">
+        {reports.length === 0 && <div className="glass p-6 text-white/40">Aucun signalement recent.</div>}
+        {reports.map((item) => (
+          <div key={item.id} className="glass p-5" data-testid={`match-report-admin-${item.id}`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="font-display text-lg uppercase">{MATCH_REPORT_LABELS[item.kind] || item.kind}</div>
+                <div className="text-xs text-white/40 mt-1">
+                  Match {item.match_id} • {item.reporter_pseudo} • {new Date(item.created_at).toLocaleString("fr-FR")}
+                </div>
+              </div>
+              <div className={`px-3 py-1 border text-xs uppercase tracking-widest rounded-full ${matchReportStatusClass(item.status)}`}>
+                {MATCH_REPORT_STATUS_LABELS[item.status] || item.status}
+              </div>
+            </div>
+            {item.round_label && <div className="text-xs text-white/40 mt-3">{item.round_label}</div>}
+            <p className="text-white/70 mt-3">{item.message}</p>
+            {item.resolution_note && <p className="text-xs text-white/40 mt-3">Note: {item.resolution_note}</p>}
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button disabled={busyId === item.id} onClick={() => updateStatus(item.id, "acknowledged")} className="btn-ghost text-xs">Prendre en compte</button>
+              <button disabled={busyId === item.id} onClick={() => updateStatus(item.id, "resolved")} className="btn-ghost text-xs text-cyan-neon">Resolu</button>
+              <button disabled={busyId === item.id} onClick={() => updateStatus(item.id, "rejected")} className="btn-ghost text-xs text-white/60">Rejeter</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 /* ============== ADMIN ============== */
 const Admin = () => {
   const { user, token } = useAuth();
@@ -3016,6 +3369,7 @@ const Admin = () => {
           </div>))}
       </div>
 
+      <MatchReportsAdmin/>
       <TournamentCrudAdmin/>
       <TournamentAdmin/>
       <NewsAdmin/>
@@ -3218,6 +3572,9 @@ const LiveMatches = () => {
             </div>
             {m.server && <div className="text-xs text-white/30 mt-3">Serveur {m.server}</div>}
             <div className="text-xs text-white/30 mt-1">{m.events} événements • dernier : {m.last_event}</div>
+            <Link to={`/match/${m.matchid}`} className="btn-ghost mt-4 inline-flex text-xs" data-testid={`open-live-match-${m.matchid}`}>
+              <ChevronRight size={12}/>Ouvrir la room
+            </Link>
           </div>
         ))}
       </div>
