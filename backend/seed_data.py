@@ -30,6 +30,103 @@ NEWS = [
     {"id": "n3", "title": "Système de cartons jaunes & rouges actif", "_offset_hours": -10, "excerpt": "Modération automatisée des signalements en direct durant les matchs."},
 ]
 
+ANNOUNCEMENTS = [
+    {
+        "id": "a1",
+        "title": "Beta ouverte ReadyUp Arena",
+        "body": "Les premiers tournois publics sont en ligne avec salle d'attente, draw, bracket et supervision CS2.",
+        "kind": "beta",
+        "priority": 5,
+        "is_active": True,
+        "cta_label": "Voir les tournois",
+        "cta_url": "/tournaments",
+        "_starts_offset_hours": -12,
+        "_ends_offset_hours": 240,
+    },
+    {
+        "id": "a2",
+        "title": "Hub CS2 désormais visible",
+        "body": "La couche serveurs, MatchZy et état des services est maintenant accessible depuis la navigation principale.",
+        "kind": "feature",
+        "priority": 4,
+        "is_active": True,
+        "cta_label": "Ouvrir le hub",
+        "cta_url": "/cs2",
+        "_starts_offset_hours": -2,
+        "_ends_offset_hours": 168,
+    },
+]
+
+CONTESTS = [
+    {
+        "id": "c1",
+        "title": "Concours ouverture beta",
+        "summary": "Tirage communautaire pour celebrer l'ouverture des premiers tournois publics.",
+        "body": "Une participation par compte. Les gagnants recoivent un badge fondateur et un lot communautaire valide par l'administration.",
+        "reward_label": "Badge fondateur + lot communautaire",
+        "is_active": True,
+        "max_entries": 500,
+        "banner_color": "#FF4600",
+        "cta_label": "Participer",
+        "cta_url": "/concours",
+        "_starts_offset_hours": -24,
+        "_ends_offset_hours": 240,
+    },
+    {
+        "id": "c2",
+        "title": "Weekend duo spotlight",
+        "summary": "Mets en avant ton binome et tente de gagner un role Discord exclusif.",
+        "body": "Concours reserve a la communaute beta. Les gagnants seront annonces dans les news et sur Discord.",
+        "reward_label": "Role Discord + mise en avant front page",
+        "is_active": True,
+        "max_entries": 200,
+        "banner_color": "#00F0FF",
+        "cta_label": "Voir le concours",
+        "cta_url": "/concours",
+        "_starts_offset_hours": -6,
+        "_ends_offset_hours": 120,
+    },
+]
+
+REWARDS = [
+    {
+        "id": "rw1",
+        "title": "Badge Fondateur",
+        "summary": "Badge permanent visible sur le profil public.",
+        "description": "Attribue un badge de soutien beta sur le profil et dans les salons de match.",
+        "category": "badge",
+        "cost_tokens": 250,
+        "stock": 150,
+        "is_active": True,
+        "accent_color": "#00F0FF",
+        "delivery_notes": "Attribution automatique apres validation.",
+    },
+    {
+        "id": "rw2",
+        "title": "Role Discord Arena",
+        "summary": "Acces a un role communautaire exclusif sur Discord.",
+        "description": "Permet d'obtenir un role saisonnier cote communaute sans avantage competitif.",
+        "category": "community",
+        "cost_tokens": 400,
+        "stock": 80,
+        "is_active": True,
+        "accent_color": "#FFB800",
+        "delivery_notes": "Traitement manuel par un administrateur.",
+    },
+    {
+        "id": "rw3",
+        "title": "Mise en avant equipe",
+        "summary": "Carte equipe mise en avant sur l'accueil pendant une rotation editoriale.",
+        "description": "La mise en avant reste purement visuelle et n'influe sur aucun match.",
+        "category": "spotlight",
+        "cost_tokens": 900,
+        "stock": 12,
+        "is_active": True,
+        "accent_color": "#10B981",
+        "delivery_notes": "Planification editoriale sous 7 jours.",
+    },
+]
+
 # status uses the tournament state machine: open -> registering -> starting -> live -> closed
 TOURNAMENTS = [
     {"id": "tr1", "name": "ReadyUp Cup #12", "organizer": "ReadyUp Official", "format": "5v5", "mode": "Single Elim BO3",
@@ -65,13 +162,52 @@ async def seed_all(db):
         for n in NEWS:
             d = dict(n)
             d["date"] = (now + timedelta(hours=d.pop("_offset_hours"))).isoformat()
+            d["body"] = d["excerpt"]
+            d["created_at"] = now.isoformat()
+            d["updated_at"] = None
             docs.append(d)
         await db.news.insert_many(docs)
+    if await db.announcements.count_documents({}) == 0:
+        docs = []
+        for a in ANNOUNCEMENTS:
+            d = dict(a)
+            d["starts_at"] = (now + timedelta(hours=d.pop("_starts_offset_hours"))).isoformat()
+            d["ends_at"] = (now + timedelta(hours=d.pop("_ends_offset_hours"))).isoformat()
+            d["created_at"] = now.isoformat()
+            d["updated_at"] = None
+            docs.append(d)
+        await db.announcements.insert_many(docs)
+    if await db.contests.count_documents({}) == 0:
+        docs = []
+        for contest in CONTESTS:
+            d = dict(contest)
+            d["starts_at"] = (now + timedelta(hours=d.pop("_starts_offset_hours"))).isoformat()
+            d["ends_at"] = (now + timedelta(hours=d.pop("_ends_offset_hours"))).isoformat()
+            d["created_at"] = now.isoformat()
+            d["updated_at"] = None
+            docs.append(d)
+        await db.contests.insert_many(docs)
+    if await db.rewards.count_documents({}) == 0:
+        docs = []
+        for reward in REWARDS:
+            d = dict(reward)
+            d["created_at"] = now.isoformat()
+            d["updated_at"] = None
+            docs.append(d)
+        await db.rewards.insert_many(docs)
     if await db.tournaments.count_documents({}) == 0:
         docs = []
         for t in TOURNAMENTS:
             d = dict(t)
             d["starts_at"] = (now + timedelta(hours=d.pop("_starts_offset_hours"))).isoformat()
             d["created_at"] = now.isoformat()
+            d["updated_at"] = None
+            d["description"] = f"{d['name']} est un tournoi {d['format']} de demonstration avec orchestration automatisee, salle d'attente temps reel et suivi CS2."
+            d["maps"] = ["Mirage", "Inferno", "Anubis"]
+            d["rules"] = [
+                "Presence requise avant le verrouillage du roster.",
+                "Les remplacements suivent les regles de la salle d'attente.",
+                "Les decisions sensibles sont journalisees.",
+            ]
             docs.append(d)
         await db.tournaments.insert_many(docs)

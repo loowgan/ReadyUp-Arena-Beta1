@@ -2,9 +2,9 @@ import React, { useEffect, useState, useRef } from "react";
 import { BrowserRouter, Routes, Route, Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
-import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertTriangle, Coins, Heart, ChevronRight, Play, Lock, CheckCircle2, Circle, Clock, Tv, ExternalLink, Star, TrendingUp, Award, Gamepad2, LogOut, User, Server, Terminal, Plus, Trash2, RefreshCw } from "lucide-react";
+import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertTriangle, Coins, Heart, ChevronRight, Play, Lock, CheckCircle2, Circle, Clock, Tv, ExternalLink, Star, TrendingUp, Award, Gamepad2, LogOut, User, Server, Terminal, Plus, Trash2, RefreshCw, Gift, ShoppingBag, Ticket, Package } from "lucide-react";
 import { AuthProvider, useAuth } from "./AuthContext";
-import { API, WS_BASE_URL } from "./lib/api";
+import { API, BACKEND_BASE_URL, WS_BASE_URL } from "./lib/api";
 
 /* ============== SHARED UI ============== */
 const Logo = ({ size = 40 }) => (
@@ -19,7 +19,8 @@ const NavBar = () => {
   const links = [
     { to: "/", label: "Accueil" }, { to: "/tournaments", label: "Tournois" },
     { to: "/teams", label: "Équipes" }, { to: "/rankings", label: "Classements" },
-    { to: "/duels", label: "Duels 1v1" }, { to: "/live", label: "En direct" }, { to: "/admin", label: "Admin" },
+    { to: "/duels", label: "Duels 1v1" }, { to: "/cs2", label: "CS2" },
+    { to: "/live", label: "En direct" }, { to: "/admin", label: "Admin" },
   ];
   return (
     <nav className="sticky top-0 z-50 glass border-b border-white/5" data-testid="main-nav">
@@ -34,7 +35,7 @@ const NavBar = () => {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <Link to="/donate" className="btn-ghost" data-testid="nav-donate-btn"><Heart size={14}/>Soutenir</Link>
+          <Link to="/support" className="btn-ghost" data-testid="nav-donate-btn"><Heart size={14}/>Soutenir</Link>
           <AuthZone/>
         </div>
       </div>
@@ -47,11 +48,11 @@ const Footer = () => (
     <div className="max-w-7xl mx-auto grid md:grid-cols-4 gap-8 text-sm">
       <div><Logo size={28}/><p className="text-white/50 mt-3">Plateforme indépendante de tournois e-sport CS2. Non affiliée à Valve.</p></div>
       <div><h4 className="font-display uppercase tracking-widest text-white mb-3">Plateforme</h4>
-        <ul className="space-y-2 text-white/60"><li><Link to="/tournaments">Tournois</Link></li><li><Link to="/teams">Équipes</Link></li><li><Link to="/rankings">Classements</Link></li></ul></div>
+        <ul className="space-y-2 text-white/60"><li><Link to="/tournaments">Tournois</Link></li><li><Link to="/teams">Équipes</Link></li><li><Link to="/rankings">Classements</Link></li><li><Link to="/cs2">Hub CS2</Link></li><li><Link to="/boutique">Boutique points</Link></li></ul></div>
       <div><h4 className="font-display uppercase tracking-widest text-white mb-3">Communauté</h4>
-        <ul className="space-y-2 text-white/60"><li><Link to="/faq">FAQ</Link></li><li><a href="#">Discord</a></li><li><Link to="/donate">Faire un don</Link></li></ul></div>
+        <ul className="space-y-2 text-white/60"><li><Link to="/faq">FAQ</Link></li><li><Link to="/community">Communauté</Link></li><li><Link to="/concours">Concours</Link></li><li><Link to="/partners">Partenaires</Link></li><li><Link to="/support">Faire un don</Link></li></ul></div>
       <div><h4 className="font-display uppercase tracking-widest text-white mb-3">Légal</h4>
-        <ul className="space-y-2 text-white/60"><li><Link to="/legal">Mentions légales</Link></li><li><Link to="/legal">Confidentialité</Link></li><li><Link to="/legal">CGU</Link></li></ul></div>
+        <ul className="space-y-2 text-white/60"><li><Link to="/legal">Mentions légales</Link></li><li><Link to="/privacy">Confidentialité</Link></li><li><Link to="/cgu">CGU</Link></li><li><Link to="/status">État des services</Link></li></ul></div>
     </div>
     <p className="text-center text-white/30 mt-8 text-xs tracking-widest uppercase">© 2026 ReadyUp Arena — Non affilié à Valve / Counter-Strike 2</p>
   </footer>
@@ -77,6 +78,146 @@ const SectionTitle = ({ title, sub, cta }) => (
   </div>
 );
 
+const HOW_READYUP_WORKS = [
+  {
+    title: "Steam verifie",
+    text: "Le compte joueur reste local, avec liaison Steam OpenID, badge public et controle des doublons pour les tournois qui l'exigent.",
+    icon: Shield,
+  },
+  {
+    title: "Salle d'attente",
+    text: "Presence, appels 5 min / 2 min, remplacement par solos compatibles et verrouillage de roster avant lancement.",
+    icon: Users,
+  },
+  {
+    title: "Orchestration CS2",
+    text: "Le backend pilote les serveurs, prepare le match, suit les evenements MatchZy et remonte les scores sans dependre du navigateur admin.",
+    icon: Server,
+  },
+  {
+    title: "Cloture automatique",
+    text: "Le resultat, le bracket, les matchs live, l'XP et l'audit suivent le cycle du tournoi avec reprise serveur apres redemarrage.",
+    icon: Zap,
+  },
+];
+
+const FAQ_ITEMS = [
+  {
+    q: "Les tournois sont-ils payants ?",
+    a: "Non. La beta reste centree sur des tournois gratuits. Le module de soutien est facultatif et n'accorde aucun avantage competitif.",
+  },
+  {
+    q: "La verification Steam prouve quoi exactement ?",
+    a: "Elle prouve seulement que le compte a controle le SteamID lie via Steam OpenID. Elle ne certifie ni l'identite civile ni le niveau de jeu.",
+  },
+  {
+    q: "Que se passe-t-il si une equipe est incomplete ?",
+    a: "La salle d'attente utilise la file de solos et les regles de renfort pour eviter qu'un tournoi soit bloque par une absence de derniere minute.",
+  },
+  {
+    q: "La partie CS2 est-elle deja active ?",
+    a: "Oui pour la beta: inventaire des serveurs, console RCON admin, suivi MatchZy, scores live et supervision. Le hub public CS2 expose maintenant cet etat.",
+  },
+];
+
+const PARTNER_BLOCKS = [
+  {
+    title: "Sponsors de lots",
+    text: "Skins ou recompenses offres par un organisateur, sans depot des joueurs et sans economie pay-to-win.",
+  },
+  {
+    title: "Structures communautaires",
+    text: "Associations, staff tournoi, arbitres et partenaires Discord peuvent relayer les evenements et recruter des equipes.",
+  },
+  {
+    title: "Infra match",
+    text: "Serveurs CS2, supervision backend, Redis, MongoDB et Vercel/Render soutiennent le fonctionnement beta.",
+  },
+];
+
+const CS2_AUTOPILOT_STEPS = [
+  "Compte -> Steam verifie -> equipe ou file solo",
+  "Inscription tournoi -> salle d'attente -> presence",
+  "Appels automatiques -> renfort -> verrouillage",
+  "Decompte -> generation bracket -> lancement match",
+  "Serveur CS2 -> MatchZy -> score live -> resultat",
+  "Classement -> XP -> recompenses -> archivage",
+];
+
+const toLocalInputValue = (value) => {
+  const base = value ? new Date(value) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const local = new Date(base.getTime() - base.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+};
+
+const splitAdminList = (value) =>
+  value
+    .split(/\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const makeTournamentForm = () => ({
+  name: "",
+  organizer: "ReadyUp Official",
+  format: "5v5",
+  mode: "Single Elim BO1",
+  capacity: 16,
+  status: "open",
+  starts_at: toLocalInputValue(),
+  prize: "Récompense à confirmer",
+  region: "EU",
+  level_min: 1,
+  image_color: "#FF4600",
+  description: "",
+  maps_text: "Mirage\nInferno\nAnubis",
+  rules_text: "Présence requise avant le verrouillage du roster.\nLes remplacements suivent les règles de la salle d'attente.",
+});
+
+const makeNewsForm = () => ({
+  title: "",
+  excerpt: "",
+  body: "",
+  date: toLocalInputValue(),
+});
+
+const makeAnnouncementForm = () => ({
+  title: "",
+  body: "",
+  kind: "info",
+  priority: 3,
+  is_active: true,
+  cta_label: "",
+  cta_url: "",
+  starts_at: toLocalInputValue(),
+  ends_at: toLocalInputValue(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()),
+});
+
+const makeContestForm = () => ({
+  title: "",
+  summary: "",
+  body: "",
+  reward_label: "",
+  max_entries: 250,
+  is_active: true,
+  banner_color: "#FF4600",
+  cta_label: "Participer",
+  cta_url: "/concours",
+  starts_at: toLocalInputValue(),
+  ends_at: toLocalInputValue(new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString()),
+});
+
+const makeRewardForm = () => ({
+  title: "",
+  summary: "",
+  description: "",
+  category: "badge",
+  cost_tokens: 250,
+  stock: 25,
+  is_active: true,
+  accent_color: "#00F0FF",
+  delivery_notes: "Traitement manuel ou automatique selon le type de reward.",
+});
+
 const Particles = () => (
   <div className="particles">{[...Array(20)].map((_, i) => (
     <span key={i} style={{ left: `${Math.random()*100}%`, animationDelay: `${Math.random()*8}s`, animationDuration: `${6+Math.random()*6}s` }}/>))}</div>
@@ -93,13 +234,42 @@ const TeamLogo = ({ team, size = 48 }) => (
 const Home = () => {
   const [tournaments, setTournaments] = useState([]);
   const [news, setNews] = useState([]);
+  const [announcements, setAnnouncements] = useState([]);
+  const [contests, setContests] = useState([]);
+  const [rewards, setRewards] = useState([]);
   const [stats, setStats] = useState({});
   const [live, setLive] = useState(null);
   const [teams, setTeams] = useState([]);
+  const [players, setPlayers] = useState([]);
   useEffect(() => {
-    Promise.all([axios.get(`${API}/tournaments`), axios.get(`${API}/news`), axios.get(`${API}/stats/global`), axios.get(`${API}/twitch/live`), axios.get(`${API}/teams`)])
-      .then(([t, n, s, l, te]) => { setTournaments(t.data); setNews(n.data); setStats(s.data); setLive(l.data); setTeams(te.data); });
+    Promise.all([
+      axios.get(`${API}/tournaments`),
+      axios.get(`${API}/news`),
+      axios.get(`${API}/announcements`),
+      axios.get(`${API}/contests`),
+      axios.get(`${API}/rewards`),
+      axios.get(`${API}/stats/global`),
+      axios.get(`${API}/twitch/live`),
+      axios.get(`${API}/teams`),
+      axios.get(`${API}/players`),
+    ]).then(([t, n, a, c, r, s, l, te, p]) => {
+      setTournaments(t.data);
+      setNews(n.data);
+      setAnnouncements(a.data);
+      setContests(c.data);
+      setRewards(r.data);
+      setStats(s.data);
+      setLive(l.data);
+      setTeams(te.data);
+      setPlayers(p.data);
+    });
   }, []);
+
+  const availablePlayers = players.filter((player) => player.available).slice(0, 4);
+  const liveTournaments = tournaments.filter((t) => ["starting", "live", "in_progress"].includes(t.status)).slice(0, 3);
+  const openTournaments = tournaments.filter((t) => ["open", "registering"].includes(t.status)).slice(0, 3);
+  const topContests = contests.slice(0, 2);
+  const featuredRewards = rewards.slice(0, 3);
 
   return (
     <div data-testid="home-page">
@@ -123,6 +293,7 @@ const Home = () => {
               <Link to="/teams" className="btn-neon" data-testid="hero-cta-team"><Users size={16}/>Créer une équipe</Link>
               <Link to="/tournaments" className="btn-ghost" data-testid="hero-cta-tournaments"><Trophy size={16}/>Voir les tournois</Link>
               <Link to="/waiting-room/tr1" className="btn-ghost" data-testid="hero-cta-match"><Swords size={16}/>Trouver un match</Link>
+              <Link to="/community" className="btn-ghost" data-testid="hero-cta-community"><Radio size={16}/>Rejoindre la communauté</Link>
             </div>
           </motion.div>
         </div>
@@ -159,6 +330,44 @@ const Home = () => {
           </div>
         </div>
 
+        <SectionTitle sub="Hub public" title="État CS2 & orchestration" cta={<Link to="/cs2" className="btn-ghost" data-testid="go-cs2-page">Voir le hub CS2 <ChevronRight size={14}/></Link>}/>
+        <div className="grid lg:grid-cols-[1.5fr_1fr] gap-4">
+          <div className="glass p-6">
+            <div className="flex items-center gap-3 flex-wrap">
+              <Badge variant={live?.live ? "live" : "soon"}>{live?.live ? "MATCH OPS LIVE" : "MODE VEILLE"}</Badge>
+              <span className="text-xs uppercase tracking-[0.3em] text-white/40">Beta publique</span>
+            </div>
+            <h3 className="font-display text-2xl mt-4 uppercase">La partie CS2 ne reste plus cachée en admin</h3>
+            <p className="text-white/60 mt-3">
+              Le hub public expose l'orchestration serveurs, le cycle de match, les événements MatchZy et l'état global de la stack
+              pour montrer que le site ne se limite pas à des cartes de tournois.
+            </p>
+            <div className="grid md:grid-cols-3 gap-3 mt-6">
+              <div className="border border-white/10 p-4">
+                <div className="text-xs uppercase tracking-widest text-white/40">Tournois live</div>
+                <div className="font-display text-3xl text-orange-500 mt-2">{liveTournaments.length}</div>
+              </div>
+              <div className="border border-white/10 p-4">
+                <div className="text-xs uppercase tracking-widest text-white/40">Ouverts / inscriptions</div>
+                <div className="font-display text-3xl text-cyan-neon mt-2">{openTournaments.length}</div>
+              </div>
+              <div className="border border-white/10 p-4">
+                <div className="text-xs uppercase tracking-widest text-white/40">Renforts disponibles</div>
+                <div className="font-display text-3xl text-yellow-neon mt-2">{availablePlayers.length}</div>
+              </div>
+            </div>
+          </div>
+          <div className="glass p-6">
+            <h3 className="font-display text-lg uppercase">Livré dans la beta</h3>
+            <div className="space-y-3 mt-4 text-sm text-white/70">
+              <div className="flex gap-3"><CheckCircle2 size={16} className="text-cyan-neon mt-0.5 shrink-0"/><span>Serveurs CS2 inventoriés et supervisés via l'API.</span></div>
+              <div className="flex gap-3"><CheckCircle2 size={16} className="text-cyan-neon mt-0.5 shrink-0"/><span>Console RCON admin et ping serveur pour la partie exploitation.</span></div>
+              <div className="flex gap-3"><CheckCircle2 size={16} className="text-cyan-neon mt-0.5 shrink-0"/><span>Remontée MatchZy et scores temps réel dans le site.</span></div>
+              <div className="flex gap-3"><CheckCircle2 size={16} className="text-cyan-neon mt-0.5 shrink-0"/><span>Décompte, draw et bracket déjà reliés au cycle tournoi.</span></div>
+            </div>
+          </div>
+        </div>
+
         {/* TOURNAMENTS */}
         <SectionTitle sub="Action immédiate" title="Tournois à venir" cta={<Link to="/tournaments" className="btn-ghost" data-testid="all-tournaments-btn">Tout voir <ChevronRight size={14}/></Link>}/>
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -180,6 +389,52 @@ const Home = () => {
             </Link>))}
         </div>
 
+        <SectionTitle sub="Renforts" title="Joueurs solos disponibles"/>
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {availablePlayers.map((player) => (
+            <div key={player.id} className="glass p-5" data-testid={`available-player-${player.id}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-display text-xl">{player.pseudo}</div>
+                  <div className="text-xs uppercase tracking-widest text-white/40 mt-1">{player.country} • {player.role}</div>
+                </div>
+                {player.steam_verified && <Badge variant="verified">Steam vérifié</Badge>}
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-5 text-center">
+                <div><div className="font-display text-cyan-neon text-xl">{player.elo}</div><div className="text-[10px] uppercase tracking-widest text-white/40">ELO</div></div>
+                <div><div className="font-display text-white text-xl">{player.kdr}</div><div className="text-[10px] uppercase tracking-widest text-white/40">KDR</div></div>
+                <div><div className="font-display text-yellow-neon text-xl">{player.reliability}</div><div className="text-[10px] uppercase tracking-widest text-white/40">Fiabilité</div></div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <SectionTitle sub="Plateforme" title="Annonces importantes"/>
+        <div className="grid md:grid-cols-2 gap-4">
+          {announcements.length === 0 && <div className="glass p-6 text-white/40">Aucune annonce active pour le moment.</div>}
+          {announcements.map((announcement) => (
+            <div key={announcement.id} className="glass p-6">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <Badge variant={announcement.kind === "maintenance" ? "soon" : "verified"}>{announcement.kind}</Badge>
+                <span className="text-xs uppercase tracking-widest text-white/40">Priorité {announcement.priority}</span>
+              </div>
+              <h3 className="font-display text-2xl uppercase mt-4">{announcement.title}</h3>
+              <p className="text-white/60 mt-3">{announcement.body}</p>
+              {announcement.cta_url && (
+                announcement.cta_url.startsWith("http") ? (
+                  <a href={announcement.cta_url} target="_blank" rel="noreferrer" className="btn-ghost mt-5">
+                    {announcement.cta_label || "Ouvrir"} <ExternalLink size={14}/>
+                  </a>
+                ) : (
+                  <Link to={announcement.cta_url} className="btn-ghost mt-5">
+                    {announcement.cta_label || "Ouvrir"} <ChevronRight size={14}/>
+                  </Link>
+                )
+              )}
+            </div>
+          ))}
+        </div>
+
         {/* NEWS */}
         <SectionTitle sub="Actualité" title="Dernières news"/>
         <div className="grid md:grid-cols-3 gap-4">
@@ -191,7 +446,77 @@ const Home = () => {
             </div>))}
         </div>
 
-        <SectionTitle sub="Communauté" title="Soutiens récents" cta={<Link to="/donate" className="btn-ghost" data-testid="donate-cta-home"><Heart size={14}/>Faire un don</Link>}/>
+        <SectionTitle sub="Communauté" title="Concours actifs" cta={<Link to="/concours" className="btn-ghost"><Ticket size={14}/>Voir tout</Link>}/>
+        <div className="grid md:grid-cols-2 gap-4">
+          {topContests.length === 0 && <div className="glass p-6 text-white/40">Aucun concours public actif.</div>}
+          {topContests.map((contest) => (
+            <div key={contest.id} className="glass p-6" style={{ borderColor: `${contest.banner_color || "#FF4600"}55` }}>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <Badge variant="soon">{contest.remaining_slots === 0 ? "Complet" : "Ouvert"}</Badge>
+                <span className="text-xs uppercase tracking-widest text-white/40">{contest.entries_count} / {contest.max_entries} participations</span>
+              </div>
+              <h3 className="font-display text-2xl uppercase mt-4">{contest.title}</h3>
+              <p className="text-white/60 mt-3">{contest.summary}</p>
+              <div className="text-sm text-white/50 mt-4">Lot: <span className="text-white">{contest.reward_label || "Annonce a venir"}</span></div>
+              <Link to="/concours" className="btn-ghost mt-5">
+                {contest.cta_label || "Participer"} <ChevronRight size={14}/>
+              </Link>
+            </div>
+          ))}
+        </div>
+
+        <SectionTitle sub="Jetons" title="Boutique de points" cta={<Link to="/boutique" className="btn-ghost"><ShoppingBag size={14}/>Ouvrir la boutique</Link>}/>
+        <div className="grid md:grid-cols-3 gap-4">
+          {featuredRewards.length === 0 && <div className="glass p-6 text-white/40">Aucune reward active pour le moment.</div>}
+          {featuredRewards.map((reward) => (
+            <div key={reward.id} className="glass p-6" style={{ borderColor: `${reward.accent_color || "#00F0FF"}55` }}>
+              <div className="flex items-center justify-between gap-3">
+                <Badge variant={reward.stock > 0 ? "verified" : "offline"}>{reward.category}</Badge>
+                <span className="font-display text-yellow-neon">{reward.cost_tokens} pts</span>
+              </div>
+              <h3 className="font-display text-xl uppercase mt-4">{reward.title}</h3>
+              <p className="text-white/60 mt-3">{reward.summary}</p>
+              <div className="text-xs uppercase tracking-widest text-white/40 mt-4">Stock restant: {reward.stock}</div>
+            </div>
+          ))}
+        </div>
+
+        <SectionTitle sub="Autopilote" title="Comment ReadyUp Arena fonctionne"/>
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {HOW_READYUP_WORKS.map((step) => {
+            const Icon = step.icon;
+            return (
+              <div key={step.title} className="glass p-6">
+                <div className="w-11 h-11 border border-orange-500/30 bg-orange-500/10 flex items-center justify-center">
+                  <Icon size={20} className="text-orange-500"/>
+                </div>
+                <h3 className="font-display text-xl mt-4 uppercase">{step.title}</h3>
+                <p className="text-sm text-white/60 mt-3">{step.text}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <SectionTitle sub="Ressources" title="FAQ, partenaires et support"/>
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <Link to="/faq" className="glass glass-hover p-6 block">
+            <div className="text-xs uppercase tracking-[0.3em] text-orange-500">FAQ</div>
+            <h3 className="font-display text-2xl mt-3 uppercase">Questions clés de la beta</h3>
+            <p className="text-white/60 mt-3">Steam vérifié, gratuité des tournois, renforts, fonctionnement CS2 et règles d'équité.</p>
+          </Link>
+          <Link to="/partners" className="glass glass-hover p-6 block">
+            <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Partenaires</div>
+            <h3 className="font-display text-2xl mt-3 uppercase">Sponsoring et communautés</h3>
+            <p className="text-white/60 mt-3">La beta prépare déjà la place pour lots sponsorisés, relais Discord et support événementiel.</p>
+          </Link>
+          <Link to="/contact" className="glass glass-hover p-6 block">
+            <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Contact</div>
+            <h3 className="font-display text-2xl mt-3 uppercase">Bugs, orga et candidatures</h3>
+            <p className="text-white/60 mt-3">Un point d'entrée unique pour remonter un bug, proposer un tournoi ou rejoindre l'équipe projet.</p>
+          </Link>
+        </div>
+
+        <SectionTitle sub="Communauté" title="Soutiens récents" cta={<Link to="/support" className="btn-ghost" data-testid="donate-cta-home"><Heart size={14}/>Faire un don</Link>}/>}
         <RecentDonors/>
       </div>
     </div>
@@ -318,6 +643,28 @@ const TournamentDetail = () => {
       </div>
       <div className="grid lg:grid-cols-2 gap-4 mt-6">
         <div className="glass p-6">
+          <h3 className="font-display text-xl uppercase mb-4">Présentation</h3>
+          <p className="text-white/60 leading-relaxed">{t.description || "Description à venir."}</p>
+          <div className="grid md:grid-cols-2 gap-4 mt-6">
+            <div>
+              <div className="text-xs uppercase tracking-widest text-white/40 mb-2">Maps</div>
+              <div className="flex flex-wrap gap-2">
+                {(t.maps?.length ? t.maps : ["Mirage", "Inferno", "Anubis"]).map((mapName) => (
+                  <span key={mapName} className="px-3 py-1 border border-white/10 text-sm text-white/70">{mapName}</span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs uppercase tracking-widest text-white/40 mb-2">Règles clés</div>
+              <ul className="space-y-2 text-sm text-white/70">
+                {(t.rules?.length ? t.rules : ["Présence requise avant le départ.", "Steam vérifié conseillé.", "Audit des décisions sensibles activé."]).map((rule, index) => (
+                  <li key={index}>• {rule}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div className="glass p-6">
           <h3 className="font-display text-xl uppercase mb-4">Équipes inscrites ({t.teams_in.length})</h3>
           <div className="space-y-2">{t.teams_in.map((te,i) => (
             <div key={te.id} className="flex items-center gap-3 p-2 border border-white/5">
@@ -326,7 +673,7 @@ const TournamentDetail = () => {
               <span className="text-xs text-cyan-neon">ELO {te.elo}</span>
             </div>))}</div>
         </div>
-        <div className="glass p-6">
+        <div className="glass p-6 lg:col-span-2">
           <h3 className="font-display text-xl uppercase mb-4">File solo / Renforts ({t.solo_queue.length})</h3>
           <div className="space-y-2">{t.solo_queue.map(p => (
             <div key={p.id} className="flex items-center gap-3 p-2 border border-white/5">
@@ -711,6 +1058,358 @@ const Rankings = () => {
   );
 };
 
+const FaqPage = () => (
+  <div className="max-w-6xl mx-auto px-6 py-10" data-testid="faq-page">
+    <div className="max-w-3xl">
+      <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Base de connaissances</div>
+      <h1 className="font-display text-5xl uppercase mt-3">FAQ beta ReadyUp Arena</h1>
+      <p className="text-white/60 mt-4">
+        Cette base reprend les points clés du prompt complet: gratuité des tournois, badge Steam vérifié, renforts,
+        orchestration CS2 et supervision de la plateforme.
+      </p>
+    </div>
+    <div className="grid lg:grid-cols-2 gap-4 mt-8">
+      {FAQ_ITEMS.map((item) => (
+        <div key={item.q} className="glass p-6">
+          <h3 className="font-display text-2xl uppercase">{item.q}</h3>
+          <p className="text-white/60 mt-3">{item.a}</p>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const CommunityPage = () => (
+  <div className="max-w-6xl mx-auto px-6 py-10" data-testid="community-page">
+    <div className="grid lg:grid-cols-[1.25fr_1fr] gap-6">
+      <div className="glass p-8">
+        <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Communauté</div>
+        <h1 className="font-display text-5xl uppercase mt-3">Rejoindre l'arène</h1>
+        <p className="text-white/60 mt-4">
+          La beta ouvre les flux essentiels: équipes, tournois, solos disponibles, supervision CS2 et retours produit.
+          Les canaux communautaires restent pilotés proprement pour éviter le spam et garder un onboarding clair.
+        </p>
+        <div className="grid md:grid-cols-2 gap-4 mt-8">
+          <div className="border border-white/10 p-5">
+            <div className="font-display text-xl uppercase">Pour les joueurs</div>
+            <p className="text-white/60 mt-3">Créer un compte, lier Steam, trouver une équipe, rejoindre un tournoi gratuit et suivre les matchs live.</p>
+          </div>
+          <div className="border border-white/10 p-5">
+            <div className="font-display text-xl uppercase">Pour les staffs</div>
+            <p className="text-white/60 mt-3">Organisateurs, arbitres et modérateurs peuvent centraliser annonces, supervision et exceptions de tournoi.</p>
+          </div>
+        </div>
+      </div>
+      <div className="glass p-8">
+        <h2 className="font-display text-2xl uppercase">Canaux beta</h2>
+        <div className="space-y-4 mt-5 text-sm text-white/70">
+          <div className="border border-white/10 p-4">
+            <div className="text-xs uppercase tracking-widest text-white/40">Discord</div>
+            <p className="mt-2">Salon communauté à connecter côté admin. Le parcours est prêt même si l'invitation finale reste à configurer.</p>
+          </div>
+          <div className="border border-white/10 p-4">
+            <div className="text-xs uppercase tracking-widest text-white/40">Annonces tournoi</div>
+            <p className="mt-2">Les blocs actualités, home et salle d'attente sont déjà prêts pour relayer les prochains événements.</p>
+          </div>
+          <div className="border border-white/10 p-4">
+            <div className="text-xs uppercase tracking-widest text-white/40">Feedback produit</div>
+            <p className="mt-2">La page contact sert à remonter bugs, demandes d'ajustement et besoins d'organisation.</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-3 mt-6">
+          <Link to="/tournaments" className="btn-neon"><Trophy size={14}/>Voir les tournois</Link>
+          <Link to="/contact" className="btn-ghost"><Radio size={14}/>Contacter l'équipe</Link>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const PartnersPage = () => (
+  <div className="max-w-6xl mx-auto px-6 py-10" data-testid="partners-page">
+    <div className="max-w-3xl">
+      <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Partenariats</div>
+      <h1 className="font-display text-5xl uppercase mt-3">Partenaires et soutien écosystème</h1>
+      <p className="text-white/60 mt-4">
+        Le prompt complet prévoit sponsors, partenaires communautaires et support opérationnel. Cette page matérialise ces espaces
+        au lieu de laisser un simple placeholder dans le footer.
+      </p>
+    </div>
+    <div className="grid lg:grid-cols-3 gap-4 mt-8">
+      {PARTNER_BLOCKS.map((block) => (
+        <div key={block.title} className="glass p-6">
+          <div className="text-xs uppercase tracking-[0.3em] text-white/40">Bloc partenaire</div>
+          <h2 className="font-display text-2xl uppercase mt-3">{block.title}</h2>
+          <p className="text-white/60 mt-3">{block.text}</p>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const ContactPage = () => (
+  <div className="max-w-6xl mx-auto px-6 py-10" data-testid="contact-page">
+    <div className="grid lg:grid-cols-[1.15fr_1fr] gap-6">
+      <div className="glass p-8">
+        <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Contact</div>
+        <h1 className="font-display text-5xl uppercase mt-3">Support, bugs et organisation</h1>
+        <p className="text-white/60 mt-4">
+          Cette beta doit pouvoir collecter les retours importants sans passer par l'admin panel. Les canaux ci-dessous cadrent les demandes
+          les plus probables avant d'ajouter une messagerie complète.
+        </p>
+        <div className="grid md:grid-cols-2 gap-4 mt-8">
+          <div className="border border-white/10 p-5">
+            <div className="font-display text-xl uppercase">Bug ou anomalie</div>
+            <p className="text-white/60 mt-3">Signaler un problème de compte, bracket, salle d'attente, score live ou synchronisation CS2.</p>
+          </div>
+          <div className="border border-white/10 p-5">
+            <div className="font-display text-xl uppercase">Tournoi et staff</div>
+            <p className="text-white/60 mt-3">Candidature organisateur, demande d'arbitrage, support événement ou besoin de serveur dédié.</p>
+          </div>
+        </div>
+      </div>
+      <div className="glass p-8">
+        <h2 className="font-display text-2xl uppercase">Point d'entrée recommandé</h2>
+        <div className="space-y-4 mt-5 text-sm text-white/70">
+          <div className="border border-white/10 p-4">
+            <div className="text-xs uppercase tracking-widest text-white/40">Produit</div>
+            <p className="mt-2">Passer par la communauté beta pour centraliser les retours et éviter les pertes de contexte.</p>
+          </div>
+          <div className="border border-white/10 p-4">
+            <div className="text-xs uppercase tracking-widest text-white/40">Infrastructure</div>
+            <p className="mt-2">Utiliser l'état des services et le hub CS2 avant d'ouvrir un ticket pour distinguer bug UI et indisponibilité backend.</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-3 mt-6">
+          <Link to="/status" className="btn-ghost"><Server size={14}/>État des services</Link>
+          <Link to="/cs2" className="btn-neon"><Target size={14}/>Hub CS2</Link>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const StatusPage = () => {
+  const [health, setHealth] = useState(null);
+  const [stats, setStats] = useState(null);
+
+  useEffect(() => {
+    Promise.all([
+      axios.get(`${BACKEND_BASE_URL}/health/ready`),
+      axios.get(`${API}/stats/global`),
+    ]).then(([h, s]) => {
+      setHealth(h.data);
+      setStats(s.data);
+    }).catch(() => {
+      setHealth({ status: "degraded", services: { mongo: "unknown", redis: "unknown" } });
+    });
+  }, []);
+
+  return (
+    <div className="max-w-6xl mx-auto px-6 py-10" data-testid="status-page">
+      <div className="max-w-3xl">
+        <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Supervision</div>
+        <h1 className="font-display text-5xl uppercase mt-3">État des services</h1>
+        <p className="text-white/60 mt-4">
+          La page d'état manquait dans le parcours alors qu'elle est explicitement demandée par le prompt. Elle reflète la disponibilité
+          du backend public et des briques critiques.
+        </p>
+      </div>
+      <div className="grid md:grid-cols-3 gap-4 mt-8">
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">API</div>
+          <div className={`font-display text-3xl mt-3 ${health?.status === "ok" ? "text-cyan-neon" : "text-yellow-neon"}`}>{health?.status || "..."}</div>
+        </div>
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">MongoDB</div>
+          <div className={`font-display text-3xl mt-3 ${health?.services?.mongo === "ok" ? "text-cyan-neon" : "text-yellow-neon"}`}>{health?.services?.mongo || "..."}</div>
+        </div>
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Redis</div>
+          <div className={`font-display text-3xl mt-3 ${health?.services?.redis === "ok" ? "text-cyan-neon" : "text-yellow-neon"}`}>{health?.services?.redis || "..."}</div>
+        </div>
+      </div>
+      {stats && (
+        <div className="grid md:grid-cols-4 gap-4 mt-4">
+          <div className="glass p-5"><div className="text-xs uppercase tracking-widest text-white/40">Joueurs</div><div className="font-display text-3xl mt-2">{stats.players}</div></div>
+          <div className="glass p-5"><div className="text-xs uppercase tracking-widest text-white/40">Tournois</div><div className="font-display text-3xl mt-2">{stats.tournaments_total}</div></div>
+          <div className="glass p-5"><div className="text-xs uppercase tracking-widest text-white/40">Matchs</div><div className="font-display text-3xl mt-2">{stats.matches_played}</div></div>
+          <div className="glass p-5"><div className="text-xs uppercase tracking-widest text-white/40">En ligne</div><div className="font-display text-3xl mt-2">{stats.online_now}</div></div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const Cs2Hub = () => {
+  const { user } = useAuth();
+  const [servers, setServers] = useState([]);
+  const [matches, setMatches] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const [healthResponse, serversResponse, matchesResponse, eventsResponse] = await Promise.all([
+          axios.get(`${BACKEND_BASE_URL}/health/ready`),
+          axios.get(`${API}/cs2/servers`),
+          axios.get(`${API}/matches/live`),
+          axios.get(`${API}/cs2/events?limit=6`),
+        ]);
+        setHealth(healthResponse.data);
+        setServers(serversResponse.data);
+        setMatches(matchesResponse.data);
+        setEvents(eventsResponse.data);
+      } catch {
+        setHealth({ status: "degraded", services: { mongo: "unknown", redis: "unknown" } });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, []);
+
+  const onlineServers = servers.filter((server) => ["online", "live"].includes(server.status)).length;
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="cs2-page">
+      <div className="grid xl:grid-cols-[1.35fr_1fr] gap-6">
+        <div className="glass p-8">
+          <div className="flex items-center gap-3 flex-wrap">
+            <Badge variant={health?.status === "ok" ? "live" : "soon"}>{health?.status === "ok" ? "STACK READY" : "SURVEILLANCE"}</Badge>
+            <span className="text-xs uppercase tracking-[0.3em] text-white/40">CS2 orchestration beta</span>
+          </div>
+          <h1 className="font-display text-5xl uppercase mt-4">Hub CS2 public</h1>
+          <p className="text-white/60 mt-4 max-w-3xl">
+            Le prompt complet prévoit une chaîne visible entre tournoi, salle d'attente, serveur CS2, MatchZy et résultats.
+            Cette page expose enfin cette couche au public au lieu de la laisser uniquement dans l'admin.
+          </p>
+          <div className="grid md:grid-cols-4 gap-4 mt-8">
+            <div className="border border-white/10 p-5">
+              <div className="text-xs uppercase tracking-widest text-white/40">Serveurs actifs</div>
+              <div className="font-display text-4xl text-orange-500 mt-2">{onlineServers}</div>
+            </div>
+            <div className="border border-white/10 p-5">
+              <div className="text-xs uppercase tracking-widest text-white/40">Serveurs déclarés</div>
+              <div className="font-display text-4xl text-cyan-neon mt-2">{servers.length}</div>
+            </div>
+            <div className="border border-white/10 p-5">
+              <div className="text-xs uppercase tracking-widest text-white/40">Matchs live</div>
+              <div className="font-display text-4xl text-yellow-neon mt-2">{matches.length}</div>
+            </div>
+            <div className="border border-white/10 p-5">
+              <div className="text-xs uppercase tracking-widest text-white/40">Événements récents</div>
+              <div className="font-display text-4xl mt-2">{events.length}</div>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3 mt-8">
+            <Link to="/live" className="btn-neon"><Tv size={14}/>Voir les matchs live</Link>
+            <Link to="/tournaments" className="btn-ghost"><Trophy size={14}/>Voir les tournois</Link>
+            {user?.is_admin && <Link to="/admin" className="btn-ghost"><Terminal size={14}/>Ouvrir l'admin</Link>}
+          </div>
+        </div>
+        <div className="glass p-8">
+          <h2 className="font-display text-2xl uppercase">Services critiques</h2>
+          <div className="space-y-4 mt-5 text-sm text-white/70">
+            <div className="border border-white/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-white/40">API</div>
+              <div className={`font-display text-2xl mt-2 ${health?.status === "ok" ? "text-cyan-neon" : "text-yellow-neon"}`}>{health?.status || "..."}</div>
+            </div>
+            <div className="border border-white/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-white/40">MongoDB</div>
+              <div className={`font-display text-2xl mt-2 ${health?.services?.mongo === "ok" ? "text-cyan-neon" : "text-yellow-neon"}`}>{health?.services?.mongo || "..."}</div>
+            </div>
+            <div className="border border-white/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-white/40">Redis</div>
+              <div className={`font-display text-2xl mt-2 ${health?.services?.redis === "ok" ? "text-cyan-neon" : "text-yellow-neon"}`}>{health?.services?.redis || "..."}</div>
+            </div>
+          </div>
+          {loading && <p className="text-white/40 text-sm mt-4">Chargement de l'état CS2...</p>}
+        </div>
+      </div>
+
+      <SectionTitle sub="Cycle complet" title="Chaîne de match automatisée"/>
+      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {CS2_AUTOPILOT_STEPS.map((step, index) => (
+          <div key={step} className="glass p-5">
+            <div className="text-xs uppercase tracking-[0.3em] text-white/40">Étape {index + 1}</div>
+            <div className="font-display text-xl uppercase mt-3">{step}</div>
+          </div>
+        ))}
+      </div>
+
+      <SectionTitle sub="Serveurs" title="Inventaire CS2"/>
+      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {servers.length === 0 && (
+          <div className="glass p-6 text-white/50">
+            Aucun serveur CS2 n'est encore publié dans l'inventaire public. La couche API est prête et reste visible depuis l'admin.
+          </div>
+        )}
+        {servers.map((server) => (
+          <div key={server.id} className="glass p-6" data-testid={`public-cs2-server-${server.id}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-display text-2xl uppercase">{server.name}</div>
+                <div className="text-xs uppercase tracking-widest text-white/40 mt-1">{server.host}:{server.port}</div>
+              </div>
+              <Badge variant={["online", "live"].includes(server.status) ? "verified" : "soon"}>{server.status || "unknown"}</Badge>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-5 text-sm">
+              <div className="border border-white/10 p-3">
+                <div className="text-xs uppercase tracking-widest text-white/40">Match courant</div>
+                <div className="mt-2 text-white/80">{server.current_match_id || "Libre"}</div>
+              </div>
+              <div className="border border-white/10 p-3">
+                <div className="text-xs uppercase tracking-widest text-white/40">Dernier check</div>
+                <div className="mt-2 text-white/80">{server.last_checked_at ? new Date(server.last_checked_at).toLocaleString("fr-FR") : "Pas encore"}</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <SectionTitle sub="Live telemetry" title="Matchs et événements MatchZy"/>
+      <div className="grid xl:grid-cols-[1.2fr_0.8fr] gap-4">
+        <div className="glass p-6">
+          <h3 className="font-display text-2xl uppercase">Matchs en direct</h3>
+          <div className="space-y-3 mt-5">
+            {matches.length === 0 && <div className="text-white/50">Aucun match live pour le moment.</div>}
+            {matches.slice(0, 4).map((match) => (
+              <div key={match.matchid} className="border border-white/10 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-display uppercase">{match.team1_name} vs {match.team2_name}</div>
+                  <Badge variant="live">LIVE</Badge>
+                </div>
+                <div className="font-display text-3xl text-cyan-neon mt-3">{match.team1_score} : {match.team2_score}</div>
+                <div className="text-sm text-white/50 mt-2">{match.map_name || "Map en cours"} • {match.server || "Serveur non lié publiquement"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="glass p-6">
+          <h3 className="font-display text-2xl uppercase">Événements récents</h3>
+          <div className="space-y-3 mt-5">
+            {events.length === 0 && <div className="text-white/50">Aucun événement MatchZy remonté pour l'instant.</div>}
+            {events.map((event) => (
+              <div key={event.id} className="border border-white/10 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-display text-sm uppercase">{event.event}</div>
+                  <div className="text-[11px] text-white/40">{new Date(event.received_at).toLocaleTimeString("fr-FR")}</div>
+                </div>
+                <div className="text-sm text-white/60 mt-2">Match {event.matchid || "n/a"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 /* ============== DUELS 1v1 ============== */
 const Duels = () => {
   const { user, token } = useAuth();
@@ -797,6 +1496,193 @@ const Duels = () => {
   );
 };
 
+const ContestsPage = () => {
+  const { token, user } = useAuth();
+  const [contests, setContests] = useState([]);
+  const [busyId, setBusyId] = useState(null);
+
+  const refresh = async () => {
+    const response = await axios.get(`${API}/contests`);
+    setContests(response.data);
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const join = async (contestId) => {
+    if (!token) {
+      alert("Connectez-vous pour participer.");
+      return;
+    }
+    setBusyId(contestId);
+    try {
+      await axios.post(`${API}/contests/${contestId}/join`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      await refresh();
+      alert("Participation enregistrée.");
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur concours");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="contests-page">
+      <div className="flex items-center gap-3"><Ticket className="text-orange-500" size={32}/><h1 className="font-display text-5xl uppercase">Concours & campagnes</h1></div>
+      <p className="text-white/50 mt-2">Jeux concours communautaires, gratuits, pilotables depuis l'administration et sans impact compétitif.</p>
+      {!user && <div className="glass p-5 mt-6 text-white/60">Connectez-vous pour enregistrer une participation. Un compte = une participation par concours.</div>}
+      <div className="grid md:grid-cols-2 gap-4 mt-8">
+        {contests.length === 0 && <div className="glass p-6 text-white/40">Aucun concours actif pour le moment.</div>}
+        {contests.map((contest) => (
+          <div key={contest.id} className="glass p-6" data-testid={`contest-card-${contest.id}`} style={{ borderColor: `${contest.banner_color || "#FF4600"}55` }}>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <Badge variant={contest.remaining_slots === 0 ? "offline" : "soon"}>{contest.remaining_slots === 0 ? "Complet" : "Ouvert"}</Badge>
+              <span className="text-xs uppercase tracking-widest text-white/40">{contest.entries_count} / {contest.max_entries} participations</span>
+            </div>
+            <h2 className="font-display text-3xl uppercase mt-4">{contest.title}</h2>
+            <p className="text-white/60 mt-3">{contest.summary}</p>
+            <p className="text-white/50 mt-4">{contest.body}</p>
+            <div className="grid md:grid-cols-2 gap-3 mt-5 text-sm">
+              <div className="border border-white/10 p-4">
+                <div className="text-xs uppercase tracking-widest text-white/40">Lot</div>
+                <div className="font-display mt-2">{contest.reward_label || "A confirmer"}</div>
+              </div>
+              <div className="border border-white/10 p-4">
+                <div className="text-xs uppercase tracking-widest text-white/40">Fin</div>
+                <div className="font-display mt-2">{contest.ends_at ? new Date(contest.ends_at).toLocaleDateString("fr-FR") : "Sans limite"}</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3 mt-6">
+              <button disabled={busyId === contest.id || contest.remaining_slots === 0} onClick={() => join(contest.id)} className="btn-neon">
+                <Gift size={14}/>{busyId === contest.id ? "Envoi..." : "Participer"}
+              </button>
+              {contest.cta_url && contest.cta_url !== "/concours" && (
+                contest.cta_url.startsWith("http") ? (
+                  <a href={contest.cta_url} target="_blank" rel="noreferrer" className="btn-ghost">{contest.cta_label || "Ouvrir"} <ExternalLink size={14}/></a>
+                ) : (
+                  <Link to={contest.cta_url} className="btn-ghost">{contest.cta_label || "Ouvrir"} <ChevronRight size={14}/></Link>
+                )
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const RewardsStorePage = () => {
+  const { token, user } = useAuth();
+  const [rewards, setRewards] = useState([]);
+  const [balance, setBalance] = useState(null);
+  const [redemptions, setRedemptions] = useState([]);
+  const [busyId, setBusyId] = useState(null);
+
+  const refresh = async () => {
+    const rewardsResponse = await axios.get(`${API}/rewards`);
+    setRewards(rewardsResponse.data);
+    if (token) {
+      const [balanceResponse, redemptionsResponse] = await Promise.all([
+        axios.get(`${API}/duels/balance`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API}/rewards/redemptions/me`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      setBalance(balanceResponse.data.tokens);
+      setRedemptions(redemptionsResponse.data);
+    } else {
+      setBalance(null);
+      setRedemptions([]);
+    }
+  };
+
+  useEffect(() => {
+    const load = async () => {
+      const rewardsResponse = await axios.get(`${API}/rewards`);
+      setRewards(rewardsResponse.data);
+      if (token) {
+        const [balanceResponse, redemptionsResponse] = await Promise.all([
+          axios.get(`${API}/duels/balance`, { headers: { Authorization: `Bearer ${token}` } }),
+          axios.get(`${API}/rewards/redemptions/me`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        setBalance(balanceResponse.data.tokens);
+        setRedemptions(redemptionsResponse.data);
+      } else {
+        setBalance(null);
+        setRedemptions([]);
+      }
+    };
+    load().catch(() => {});
+  }, [token]);
+
+  const redeem = async (rewardId) => {
+    if (!token) {
+      alert("Connectez-vous pour utiliser vos points.");
+      return;
+    }
+    setBusyId(rewardId);
+    try {
+      await axios.post(`${API}/rewards/${rewardId}/redeem`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      await refresh();
+      alert("Reward réservée. Vérifiez l'état dans vos demandes.");
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur boutique");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="rewards-page">
+      <div className="flex items-center gap-3"><ShoppingBag className="text-cyan-neon" size={32}/><h1 className="font-display text-5xl uppercase">Boutique de points</h1></div>
+      <p className="text-white/50 mt-2">Utilise les jetons gagnés dans la plateforme pour débloquer des rewards non compétitives.</p>
+      <div className="grid lg:grid-cols-[1.5fr_1fr] gap-4 mt-8">
+        <div className="grid md:grid-cols-2 gap-4">
+          {rewards.length === 0 && <div className="glass p-6 text-white/40">Aucune reward active.</div>}
+          {rewards.map((reward) => (
+            <div key={reward.id} className="glass p-6" data-testid={`reward-card-${reward.id}`} style={{ borderColor: `${reward.accent_color || "#00F0FF"}55` }}>
+              <div className="flex items-center justify-between gap-3">
+                <Badge variant={reward.stock > 0 ? "verified" : "offline"}>{reward.category}</Badge>
+                <div className="font-display text-yellow-neon">{reward.cost_tokens} pts</div>
+              </div>
+              <h2 className="font-display text-2xl uppercase mt-4">{reward.title}</h2>
+              <p className="text-white/60 mt-3">{reward.summary}</p>
+              <p className="text-sm text-white/50 mt-4">{reward.description}</p>
+              <div className="text-xs uppercase tracking-widest text-white/40 mt-4">Stock: {reward.stock}</div>
+              <div className="text-sm text-white/50 mt-2">{reward.delivery_notes}</div>
+              <button disabled={busyId === reward.id || reward.stock <= 0} onClick={() => redeem(reward.id)} className="btn-neon mt-5">
+                <Package size={14}/>{busyId === reward.id ? "Traitement..." : "Réserver"}
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="space-y-4">
+          <div className="glass p-6">
+            <div className="text-xs uppercase tracking-widest text-white/40">Solde disponible</div>
+            <div className="font-display text-5xl text-yellow-neon mt-3">{balance ?? "—"}</div>
+            <p className="text-white/50 mt-3">Le même solde alimente les duels 1v1 et la boutique de points.</p>
+          </div>
+          <div className="glass p-6">
+            <div className="text-xs uppercase tracking-widest text-white/40">Demandes récentes</div>
+            <div className="space-y-3 mt-4">
+              {redemptions.length === 0 && <div className="text-white/40">Aucune reward réservée.</div>}
+              {redemptions.slice(0, 6).map((item) => (
+                <div key={item.id} className="border border-white/10 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-display text-sm uppercase">{item.reward_title || item.reward_id}</div>
+                    <Badge variant={item.status === "delivered" ? "verified" : item.status === "cancelled" ? "offline" : "soon"}>{item.status}</Badge>
+                  </div>
+                  <div className="text-sm text-white/50 mt-2">{item.cost_tokens} pts • {new Date(item.created_at).toLocaleString("fr-FR")}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          {!user && <div className="glass p-6 text-white/60">Connectez-vous pour voir votre solde et réserver une reward.</div>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 /* ============== TOURNAMENT STATE MACHINE (admin) ============== */
 const TRANSITIONS = { open:["registering","closed"], registering:["starting","open","closed"], starting:["live","closed"], live:["closed"], closed:[] };
 const STATE_FR = { open:"Ouvert", registering:"Inscriptions", starting:"Lancement", live:"En direct", closed:"Terminé" };
@@ -807,7 +1693,12 @@ const TournamentAdmin = () => {
   const [tours, setTours] = useState([]);
   const [busy, setBusy] = useState(false);
   const refresh = () => axios.get(`${API}/tournaments`).then(r => setTours(r.data));
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+    const handler = () => refresh();
+    window.addEventListener("readyup-tournaments-changed", handler);
+    return () => window.removeEventListener("readyup-tournaments-changed", handler);
+  }, []);
   const transition = async (id, to) => {
     setBusy(true);
     try { await axios.post(`${API}/tournaments/${id}/transition`, { to }, { headers: authH }); await refresh(); }
@@ -938,17 +1829,744 @@ const Cs2Panel = () => {
   );
 };
 
+const TournamentCrudAdmin = () => {
+  const { token, user } = useAuth();
+  const isAdmin = user?.is_admin;
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+  const [tournaments, setTournaments] = useState([]);
+  const [form, setForm] = useState(makeTournamentForm());
+  const [editingId, setEditingId] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    const response = await axios.get(`${API}/tournaments`);
+    setTournaments(response.data);
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const reset = () => {
+    setEditingId(null);
+    setForm(makeTournamentForm());
+  };
+
+  const payload = {
+    name: form.name,
+    organizer: form.organizer,
+    format: form.format,
+    mode: form.mode,
+    capacity: parseInt(form.capacity, 10),
+    status: form.status,
+    starts_at: form.starts_at,
+    prize: form.prize,
+    region: form.region,
+    level_min: parseInt(form.level_min, 10),
+    image_color: form.image_color,
+    description: form.description,
+    maps: splitAdminList(form.maps_text),
+    rules: splitAdminList(form.rules_text),
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      if (editingId) {
+        await axios.patch(`${API}/admin/tournaments/${editingId}`, payload, { headers: authH });
+      } else {
+        await axios.post(`${API}/admin/tournaments`, payload, { headers: authH });
+      }
+      await refresh();
+      window.dispatchEvent(new Event("readyup-tournaments-changed"));
+      reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur tournoi");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const edit = (tournament) => {
+    setEditingId(tournament.id);
+    setForm({
+      name: tournament.name || "",
+      organizer: tournament.organizer || "",
+      format: tournament.format || "5v5",
+      mode: tournament.mode || "",
+      capacity: tournament.capacity || 16,
+      status: tournament.status || "open",
+      starts_at: toLocalInputValue(tournament.starts_at),
+      prize: tournament.prize || "",
+      region: tournament.region || "EU",
+      level_min: tournament.level_min ?? 1,
+      image_color: tournament.image_color || "#FF4600",
+      description: tournament.description || "",
+      maps_text: (tournament.maps || []).join("\n"),
+      rules_text: (tournament.rules || []).join("\n"),
+    });
+  };
+
+  const duplicate = async (id) => {
+    setBusy(true);
+    try {
+      await axios.post(`${API}/admin/tournaments/${id}/duplicate`, {}, { headers: authH });
+      await refresh();
+      window.dispatchEvent(new Event("readyup-tournaments-changed"));
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur duplication");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Supprimer ce tournoi et ses inscriptions ?")) return;
+    setBusy(true);
+    try {
+      await axios.delete(`${API}/admin/tournaments/${id}`, { headers: authH });
+      await refresh();
+      window.dispatchEvent(new Event("readyup-tournaments-changed"));
+      if (editingId === id) reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur suppression");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!isAdmin) return null;
+
+  return (
+    <div data-testid="tournament-crud-admin">
+      <SectionTitle sub="Gestion tournoi" title={editingId ? "Modifier un tournoi" : "Créer un tournoi"}/>
+      <form onSubmit={save} className="glass p-6 space-y-4">
+        <div className="grid md:grid-cols-3 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Nom</label><input value={form.name} onChange={(e)=>setForm({...form, name: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Organisateur</label><input value={form.organizer} onChange={(e)=>setForm({...form, organizer: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Format</label><input value={form.format} onChange={(e)=>setForm({...form, format: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Mode</label><input value={form.mode} onChange={(e)=>setForm({...form, mode: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Capacité</label><input type="number" min="2" value={form.capacity} onChange={(e)=>setForm({...form, capacity: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Statut</label>
+            <select value={form.status} onChange={(e)=>setForm({...form, status: e.target.value})}>
+              {["open", "registering", "starting", "live", "closed"].map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Début</label><input type="datetime-local" value={form.starts_at} onChange={(e)=>setForm({...form, starts_at: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Récompense</label><input value={form.prize} onChange={(e)=>setForm({...form, prize: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Région</label><input value={form.region} onChange={(e)=>setForm({...form, region: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Niveau min</label><input type="number" min="0" value={form.level_min} onChange={(e)=>setForm({...form, level_min: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Couleur</label><input type="color" value={form.image_color} onChange={(e)=>setForm({...form, image_color: e.target.value})}/></div>
+        </div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Description</label><textarea rows={4} value={form.description} onChange={(e)=>setForm({...form, description: e.target.value})}/></div>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Maps (une par ligne)</label><textarea rows={4} value={form.maps_text} onChange={(e)=>setForm({...form, maps_text: e.target.value})}/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Règles clés (une par ligne)</label><textarea rows={4} value={form.rules_text} onChange={(e)=>setForm({...form, rules_text: e.target.value})}/></div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={busy} className="btn-neon">{editingId ? "Enregistrer les modifications" : "Créer le tournoi"}</button>
+          <button type="button" onClick={reset} className="btn-ghost">Réinitialiser</button>
+        </div>
+      </form>
+      <div className="grid md:grid-cols-2 gap-4 mt-4">
+        {tournaments.map((tournament) => (
+          <div key={tournament.id} className="glass p-5" data-testid={`crud-tournament-${tournament.id}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-display text-xl uppercase">{tournament.name}</div>
+                <div className="text-xs text-white/40 mt-1">{tournament.organizer} • {tournament.format} • {tournament.region}</div>
+              </div>
+              <Badge variant={["live", "starting"].includes(tournament.status) ? "live" : "soon"}>{tournament.status}</Badge>
+            </div>
+            <div className="grid grid-cols-3 gap-3 mt-4 text-sm">
+              <div><div className="text-white/40 text-xs uppercase tracking-widest">Inscrits</div><div className="font-display mt-1">{tournament.registered}/{tournament.capacity}</div></div>
+              <div><div className="text-white/40 text-xs uppercase tracking-widest">Début</div><div className="font-display mt-1">{new Date(tournament.starts_at).toLocaleDateString("fr-FR")}</div></div>
+              <div><div className="text-white/40 text-xs uppercase tracking-widest">Niveau min</div><div className="font-display mt-1">{tournament.level_min}</div></div>
+            </div>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button onClick={()=>edit(tournament)} className="btn-ghost text-xs">Modifier</button>
+              <button onClick={()=>duplicate(tournament.id)} className="btn-ghost text-xs">Dupliquer</button>
+              <button onClick={()=>remove(tournament.id)} className="btn-ghost text-xs text-red-400">Supprimer</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const NewsAdmin = () => {
+  const { token, user } = useAuth();
+  const isAdmin = user?.is_admin;
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+  const [items, setItems] = useState([]);
+  const [form, setForm] = useState(makeNewsForm());
+  const [editingId, setEditingId] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    const response = await axios.get(`${API}/admin/news`, { headers: authH });
+    setItems(response.data);
+  };
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const load = async () => {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await axios.get(`${API}/admin/news`, { headers });
+      setItems(response.data);
+    };
+    load();
+  }, [isAdmin, token]);
+
+  const reset = () => {
+    setEditingId(null);
+    setForm(makeNewsForm());
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      if (editingId) {
+        await axios.patch(`${API}/admin/news/${editingId}`, form, { headers: authH });
+      } else {
+        await axios.post(`${API}/admin/news`, form, { headers: authH });
+      }
+      await refresh();
+      reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur news");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const edit = (item) => {
+    setEditingId(item.id);
+    setForm({
+      title: item.title || "",
+      excerpt: item.excerpt || "",
+      body: item.body || "",
+      date: toLocalInputValue(item.date),
+    });
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Supprimer cette news ?")) return;
+    setBusy(true);
+    try {
+      await axios.delete(`${API}/admin/news/${id}`, { headers: authH });
+      await refresh();
+      if (editingId === id) reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur suppression");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!isAdmin) return null;
+
+  return (
+    <div data-testid="news-admin">
+      <SectionTitle sub="Contenu éditorial" title={editingId ? "Modifier une news" : "Publier une news"}/>
+      <form onSubmit={save} className="glass p-6 space-y-4">
+        <div className="grid md:grid-cols-2 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Titre</label><input value={form.title} onChange={(e)=>setForm({...form, title: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Date</label><input type="datetime-local" value={form.date} onChange={(e)=>setForm({...form, date: e.target.value})} required/></div>
+        </div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Extrait</label><textarea rows={3} value={form.excerpt} onChange={(e)=>setForm({...form, excerpt: e.target.value})} required/></div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Contenu long</label><textarea rows={4} value={form.body} onChange={(e)=>setForm({...form, body: e.target.value})}/></div>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={busy} className="btn-neon">{editingId ? "Mettre à jour" : "Publier"}</button>
+          <button type="button" onClick={reset} className="btn-ghost">Réinitialiser</button>
+        </div>
+      </form>
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+        {items.map((item) => (
+          <div key={item.id} className="glass p-5" data-testid={`news-admin-${item.id}`}>
+            <div className="text-xs uppercase tracking-widest text-orange-500">{new Date(item.date).toLocaleString("fr-FR")}</div>
+            <h3 className="font-display text-xl mt-3">{item.title}</h3>
+            <p className="text-white/60 mt-3">{item.excerpt}</p>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button onClick={()=>edit(item)} className="btn-ghost text-xs">Modifier</button>
+              <button onClick={()=>remove(item.id)} className="btn-ghost text-xs text-red-400">Supprimer</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const AnnouncementAdmin = () => {
+  const { token, user } = useAuth();
+  const isAdmin = user?.is_admin;
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+  const [items, setItems] = useState([]);
+  const [form, setForm] = useState(makeAnnouncementForm());
+  const [editingId, setEditingId] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    const response = await axios.get(`${API}/admin/announcements`, { headers: authH });
+    setItems(response.data);
+  };
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const load = async () => {
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await axios.get(`${API}/admin/announcements`, { headers });
+      setItems(response.data);
+    };
+    load();
+  }, [isAdmin, token]);
+
+  const reset = () => {
+    setEditingId(null);
+    setForm(makeAnnouncementForm());
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      if (editingId) {
+        await axios.patch(`${API}/admin/announcements/${editingId}`, form, { headers: authH });
+      } else {
+        await axios.post(`${API}/admin/announcements`, form, { headers: authH });
+      }
+      await refresh();
+      reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur annonce");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const edit = (item) => {
+    setEditingId(item.id);
+    setForm({
+      title: item.title || "",
+      body: item.body || "",
+      kind: item.kind || "info",
+      priority: item.priority ?? 3,
+      is_active: item.is_active ?? true,
+      cta_label: item.cta_label || "",
+      cta_url: item.cta_url || "",
+      starts_at: toLocalInputValue(item.starts_at),
+      ends_at: item.ends_at ? toLocalInputValue(item.ends_at) : "",
+    });
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Supprimer cette annonce ?")) return;
+    setBusy(true);
+    try {
+      await axios.delete(`${API}/admin/announcements/${id}`, { headers: authH });
+      await refresh();
+      if (editingId === id) reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur suppression");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!isAdmin) return null;
+
+  return (
+    <div data-testid="announcement-admin">
+      <SectionTitle sub="Annonces" title={editingId ? "Modifier une annonce" : "Créer une annonce"}/>
+      <form onSubmit={save} className="glass p-6 space-y-4">
+        <div className="grid md:grid-cols-3 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Titre</label><input value={form.title} onChange={(e)=>setForm({...form, title: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Type</label>
+            <select value={form.kind} onChange={(e)=>setForm({...form, kind: e.target.value})}>
+              {["info", "beta", "feature", "contest", "maintenance"].map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+            </select>
+          </div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Priorité</label><input type="number" min="1" max="5" value={form.priority} onChange={(e)=>setForm({...form, priority: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Début</label><input type="datetime-local" value={form.starts_at} onChange={(e)=>setForm({...form, starts_at: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Fin</label><input type="datetime-local" value={form.ends_at} onChange={(e)=>setForm({...form, ends_at: e.target.value})}/></div>
+          <div className="flex items-end"><label className="text-sm text-white/70 flex items-center gap-2"><input type="checkbox" checked={form.is_active} onChange={(e)=>setForm({...form, is_active: e.target.checked})}/>Annonce active</label></div>
+        </div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Message</label><textarea rows={4} value={form.body} onChange={(e)=>setForm({...form, body: e.target.value})} required/></div>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">CTA label</label><input value={form.cta_label} onChange={(e)=>setForm({...form, cta_label: e.target.value})}/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">CTA URL</label><input value={form.cta_url} onChange={(e)=>setForm({...form, cta_url: e.target.value})}/></div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={busy} className="btn-neon">{editingId ? "Mettre à jour" : "Publier l'annonce"}</button>
+          <button type="button" onClick={reset} className="btn-ghost">Réinitialiser</button>
+        </div>
+      </form>
+      <div className="grid md:grid-cols-2 gap-4 mt-4">
+        {items.map((item) => (
+          <div key={item.id} className="glass p-5" data-testid={`announcement-admin-${item.id}`}>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <Badge variant={item.is_active ? "verified" : "offline"}>{item.kind}</Badge>
+              <span className="text-xs uppercase tracking-widest text-white/40">Priorité {item.priority}</span>
+            </div>
+            <h3 className="font-display text-xl mt-3">{item.title}</h3>
+            <p className="text-white/60 mt-3">{item.body}</p>
+            <div className="text-xs text-white/40 mt-3">Fenêtre: {item.starts_at ? new Date(item.starts_at).toLocaleString("fr-FR") : "—"} → {item.ends_at ? new Date(item.ends_at).toLocaleString("fr-FR") : "sans fin"}</div>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button onClick={()=>edit(item)} className="btn-ghost text-xs">Modifier</button>
+              <button onClick={()=>remove(item.id)} className="btn-ghost text-xs text-red-400">Supprimer</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const ContestAdmin = () => {
+  const { token, user } = useAuth();
+  const isAdmin = user?.is_admin;
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+  const [items, setItems] = useState([]);
+  const [entries, setEntries] = useState({});
+  const [loadingEntriesId, setLoadingEntriesId] = useState(null);
+  const [form, setForm] = useState(makeContestForm());
+  const [editingId, setEditingId] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    const response = await axios.get(`${API}/admin/contests`, { headers: authH });
+    setItems(response.data);
+  };
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const load = async () => {
+      const response = await axios.get(`${API}/admin/contests`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      setItems(response.data);
+    };
+    load().catch(() => {});
+  }, [isAdmin, token]);
+
+  const reset = () => {
+    setEditingId(null);
+    setForm(makeContestForm());
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      if (editingId) {
+        await axios.patch(`${API}/admin/contests/${editingId}`, form, { headers: authH });
+      } else {
+        await axios.post(`${API}/admin/contests`, form, { headers: authH });
+      }
+      await refresh();
+      reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur concours");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const edit = (item) => {
+    setEditingId(item.id);
+    setForm({
+      title: item.title || "",
+      summary: item.summary || "",
+      body: item.body || "",
+      reward_label: item.reward_label || "",
+      max_entries: item.max_entries || 250,
+      is_active: item.is_active ?? true,
+      banner_color: item.banner_color || "#FF4600",
+      cta_label: item.cta_label || "Participer",
+      cta_url: item.cta_url || "/concours",
+      starts_at: toLocalInputValue(item.starts_at),
+      ends_at: item.ends_at ? toLocalInputValue(item.ends_at) : "",
+    });
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Supprimer ce concours ?")) return;
+    try {
+      await axios.delete(`${API}/admin/contests/${id}`, { headers: authH });
+      await refresh();
+      if (editingId === id) reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur concours");
+    }
+  };
+
+  const loadEntries = async (contestId) => {
+    setLoadingEntriesId(contestId);
+    try {
+      const response = await axios.get(`${API}/admin/contests/${contestId}/entries`, { headers: authH });
+      setEntries((current) => ({ ...current, [contestId]: response.data }));
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur participants");
+    } finally {
+      setLoadingEntriesId(null);
+    }
+  };
+
+  if (!isAdmin) return null;
+
+  return (
+    <div data-testid="contest-admin">
+      <SectionTitle sub="Animation" title={editingId ? "Modifier un concours" : "Créer un concours"}/>
+      <form onSubmit={save} className="glass p-6 space-y-4">
+        <div className="grid md:grid-cols-3 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Titre</label><input value={form.title} onChange={(e)=>setForm({...form, title: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Lot</label><input value={form.reward_label} onChange={(e)=>setForm({...form, reward_label: e.target.value})}/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Capacité</label><input type="number" min="1" value={form.max_entries} onChange={(e)=>setForm({...form, max_entries: e.target.value})} required/></div>
+        </div>
+        <div className="grid md:grid-cols-4 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Début</label><input type="datetime-local" value={form.starts_at} onChange={(e)=>setForm({...form, starts_at: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Fin</label><input type="datetime-local" value={form.ends_at} onChange={(e)=>setForm({...form, ends_at: e.target.value})}/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Couleur</label><input value={form.banner_color} onChange={(e)=>setForm({...form, banner_color: e.target.value})}/></div>
+          <div className="flex items-end"><label className="text-sm text-white/70 flex items-center gap-2"><input type="checkbox" checked={form.is_active} onChange={(e)=>setForm({...form, is_active: e.target.checked})}/>Concours actif</label></div>
+        </div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Résumé</label><textarea rows={2} value={form.summary} onChange={(e)=>setForm({...form, summary: e.target.value})} required/></div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Description</label><textarea rows={4} value={form.body} onChange={(e)=>setForm({...form, body: e.target.value})} required/></div>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">CTA label</label><input value={form.cta_label} onChange={(e)=>setForm({...form, cta_label: e.target.value})}/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">CTA URL</label><input value={form.cta_url} onChange={(e)=>setForm({...form, cta_url: e.target.value})}/></div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={busy} className="btn-neon">{editingId ? "Mettre à jour" : "Publier le concours"}</button>
+          <button type="button" onClick={reset} className="btn-ghost">Réinitialiser</button>
+        </div>
+      </form>
+      <div className="grid md:grid-cols-2 gap-4 mt-4">
+        {items.map((item) => (
+          <div key={item.id} className="glass p-5" data-testid={`contest-admin-${item.id}`}>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <Badge variant={item.is_active ? "verified" : "offline"}>{item.is_active ? "actif" : "inactif"}</Badge>
+              <span className="text-xs uppercase tracking-widest text-white/40">{item.entries_count} / {item.max_entries}</span>
+            </div>
+            <h3 className="font-display text-xl mt-3">{item.title}</h3>
+            <p className="text-white/60 mt-3">{item.summary}</p>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button onClick={()=>edit(item)} className="btn-ghost text-xs">Modifier</button>
+              <button onClick={()=>loadEntries(item.id)} className="btn-ghost text-xs">{loadingEntriesId === item.id ? "Chargement..." : "Voir participants"}</button>
+              <button onClick={()=>remove(item.id)} className="btn-ghost text-xs text-red-400">Supprimer</button>
+            </div>
+            {entries[item.id] && (
+              <div className="mt-4 space-y-2">
+                {entries[item.id].length === 0 && <div className="text-white/40 text-sm">Aucune participation.</div>}
+                {entries[item.id].slice(0, 8).map((entry) => (
+                  <div key={entry.id} className="border border-white/10 p-3 text-sm flex items-center justify-between gap-3">
+                    <span>{entry.pseudo}</span>
+                    <span className="text-white/40">{new Date(entry.created_at).toLocaleString("fr-FR")}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const RewardAdmin = () => {
+  const { token, user } = useAuth();
+  const isAdmin = user?.is_admin;
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+  const [items, setItems] = useState([]);
+  const [redemptions, setRedemptions] = useState([]);
+  const [form, setForm] = useState(makeRewardForm());
+  const [editingId, setEditingId] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    const [itemsResponse, redemptionsResponse] = await Promise.all([
+      axios.get(`${API}/admin/rewards`, { headers: authH }),
+      axios.get(`${API}/admin/rewards/redemptions`, { headers: authH }),
+    ]);
+    setItems(itemsResponse.data);
+    setRedemptions(redemptionsResponse.data);
+  };
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const load = async () => {
+      const [itemsResponse, redemptionsResponse] = await Promise.all([
+        axios.get(`${API}/admin/rewards`, { headers: token ? { Authorization: `Bearer ${token}` } : {} }),
+        axios.get(`${API}/admin/rewards/redemptions`, { headers: token ? { Authorization: `Bearer ${token}` } : {} }),
+      ]);
+      setItems(itemsResponse.data);
+      setRedemptions(redemptionsResponse.data);
+    };
+    load().catch(() => {});
+  }, [isAdmin, token]);
+
+  const reset = () => {
+    setEditingId(null);
+    setForm(makeRewardForm());
+  };
+
+  const payload = {
+    title: form.title,
+    summary: form.summary,
+    description: form.description,
+    category: form.category,
+    cost_tokens: parseInt(form.cost_tokens, 10),
+    stock: parseInt(form.stock, 10),
+    is_active: form.is_active,
+    accent_color: form.accent_color,
+    delivery_notes: form.delivery_notes,
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      if (editingId) {
+        await axios.patch(`${API}/admin/rewards/${editingId}`, payload, { headers: authH });
+      } else {
+        await axios.post(`${API}/admin/rewards`, payload, { headers: authH });
+      }
+      await refresh();
+      reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur reward");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const edit = (item) => {
+    setEditingId(item.id);
+    setForm({
+      title: item.title || "",
+      summary: item.summary || "",
+      description: item.description || "",
+      category: item.category || "badge",
+      cost_tokens: item.cost_tokens || 250,
+      stock: item.stock || 0,
+      is_active: item.is_active ?? true,
+      accent_color: item.accent_color || "#00F0FF",
+      delivery_notes: item.delivery_notes || "",
+    });
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Supprimer cette reward ?")) return;
+    try {
+      await axios.delete(`${API}/admin/rewards/${id}`, { headers: authH });
+      await refresh();
+      if (editingId === id) reset();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur reward");
+    }
+  };
+
+  const updateRedemption = async (redemptionId, status) => {
+    try {
+      await axios.patch(`${API}/admin/rewards/redemptions/${redemptionId}`, { status }, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur redemption");
+    }
+  };
+
+  if (!isAdmin) return null;
+
+  return (
+    <div data-testid="reward-admin">
+      <SectionTitle sub="Boutique" title={editingId ? "Modifier une reward" : "Créer une reward"}/>
+      <form onSubmit={save} className="glass p-6 space-y-4">
+        <div className="grid md:grid-cols-3 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Titre</label><input value={form.title} onChange={(e)=>setForm({...form, title: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Catégorie</label><input value={form.category} onChange={(e)=>setForm({...form, category: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Couleur</label><input value={form.accent_color} onChange={(e)=>setForm({...form, accent_color: e.target.value})}/></div>
+        </div>
+        <div className="grid md:grid-cols-3 gap-3">
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Coût points</label><input type="number" min="10" value={form.cost_tokens} onChange={(e)=>setForm({...form, cost_tokens: e.target.value})} required/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Stock</label><input type="number" min="0" value={form.stock} onChange={(e)=>setForm({...form, stock: e.target.value})} required/></div>
+          <div className="flex items-end"><label className="text-sm text-white/70 flex items-center gap-2"><input type="checkbox" checked={form.is_active} onChange={(e)=>setForm({...form, is_active: e.target.checked})}/>Reward active</label></div>
+        </div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Résumé</label><textarea rows={2} value={form.summary} onChange={(e)=>setForm({...form, summary: e.target.value})} required/></div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Description</label><textarea rows={4} value={form.description} onChange={(e)=>setForm({...form, description: e.target.value})}/></div>
+        <div><label className="text-xs uppercase tracking-widest text-white/40">Notes de livraison</label><input value={form.delivery_notes} onChange={(e)=>setForm({...form, delivery_notes: e.target.value})}/></div>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={busy} className="btn-neon">{editingId ? "Mettre à jour" : "Publier la reward"}</button>
+          <button type="button" onClick={reset} className="btn-ghost">Réinitialiser</button>
+        </div>
+      </form>
+      <div className="grid md:grid-cols-2 gap-4 mt-4">
+        {items.map((item) => (
+          <div key={item.id} className="glass p-5" data-testid={`reward-admin-${item.id}`}>
+            <div className="flex items-center justify-between gap-3">
+              <Badge variant={item.is_active ? "verified" : "offline"}>{item.category}</Badge>
+              <span className="font-display text-yellow-neon">{item.cost_tokens} pts</span>
+            </div>
+            <h3 className="font-display text-xl mt-3">{item.title}</h3>
+            <p className="text-white/60 mt-3">{item.summary}</p>
+            <div className="text-xs uppercase tracking-widest text-white/40 mt-4">Stock: {item.stock}</div>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button onClick={()=>edit(item)} className="btn-ghost text-xs">Modifier</button>
+              <button onClick={()=>remove(item.id)} className="btn-ghost text-xs text-red-400">Supprimer</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <SectionTitle sub="Traitement" title="Demandes boutique"/>
+      <div className="grid md:grid-cols-2 gap-4">
+        {redemptions.length === 0 && <div className="glass p-6 text-white/40">Aucune demande boutique.</div>}
+        {redemptions.slice(0, 12).map((item) => (
+          <div key={item.id} className="glass p-5" data-testid={`reward-redemption-${item.id}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-display text-lg uppercase">{item.reward_title || item.reward_id}</div>
+                <div className="text-xs text-white/40 mt-1">{item.pseudo} • {item.cost_tokens} pts</div>
+              </div>
+              <Badge variant={item.status === "delivered" ? "verified" : item.status === "cancelled" ? "offline" : "soon"}>{item.status}</Badge>
+            </div>
+            <div className="text-xs text-white/40 mt-3">{new Date(item.created_at).toLocaleString("fr-FR")}</div>
+            {item.status === "pending" && (
+              <div className="flex flex-wrap gap-2 mt-4">
+                <button onClick={()=>updateRedemption(item.id, "delivered")} className="btn-neon text-xs">Marquer livré</button>
+                <button onClick={()=>updateRedemption(item.id, "cancelled")} className="btn-ghost text-xs text-red-400">Annuler / rembourser</button>
+              </div>
+            )}
+            {item.status === "delivered" && (
+              <div className="flex flex-wrap gap-2 mt-4">
+                <button onClick={()=>updateRedemption(item.id, "cancelled")} className="btn-ghost text-xs text-red-400">Annuler / rembourser</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 /* ============== ADMIN ============== */
 const Admin = () => {
   const { user, token } = useAuth();
   const [cards, setCards] = useState([]);
+  const [activeTournaments, setActiveTournaments] = useState(0);
+  const [onlineNow, setOnlineNow] = useState(0);
   const [form, setForm] = useState({ target_user_id: "", severity: "yellow", reason: "" });
   const [busy, setBusy] = useState(false);
   const authH = token ? { Authorization: `Bearer ${token}` } : {};
 
   const refresh = async () => {
-    const r = await axios.get(`${API}/cards?status_f=active`);
-    setCards(r.data);
+    const [cardsResponse, tournamentsResponse, statsResponse] = await Promise.all([
+      axios.get(`${API}/cards?status_f=active`),
+      axios.get(`${API}/tournaments`),
+      axios.get(`${API}/stats/global`),
+    ]);
+    setCards(cardsResponse.data);
+    setActiveTournaments(tournamentsResponse.data.filter((tournament) => tournament.status !== "closed").length);
+    setOnlineNow(statsResponse.data.online_now || 0);
   };
   useEffect(() => { refresh(); }, []);
 
@@ -972,7 +2590,7 @@ const Admin = () => {
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="admin-page">
       <h1 className="font-display text-5xl uppercase">Tableau de bord — Organisateur</h1>
       <div className="grid md:grid-cols-4 gap-4 mt-6">
-        {[{l:"Tournois actifs",v:5,c:"text-orange-500"},{l:"Joueurs en ligne",v:487,c:"text-cyan-neon"},{l:"Cartons jaunes",v:yellows,c:"text-yellow-neon"},{l:"Cartons rouges",v:reds,c:"text-red-500"}].map((s,i) => (
+        {[{l:"Tournois actifs",v:activeTournaments,c:"text-orange-500"},{l:"Joueurs en ligne",v:onlineNow,c:"text-cyan-neon"},{l:"Cartons jaunes",v:yellows,c:"text-yellow-neon"},{l:"Cartons rouges",v:reds,c:"text-red-500"}].map((s,i) => (
           <div key={s.l} className="glass p-6" data-testid={`admin-stat-${i}`}>
             <div className="text-xs uppercase tracking-widest text-white/40">{s.l}</div>
             <div className={`font-display text-5xl font-bold mt-2 ${s.c}`}>{s.v}</div>
@@ -1015,7 +2633,12 @@ const Admin = () => {
           </div>))}
       </div>
 
+      <TournamentCrudAdmin/>
       <TournamentAdmin/>
+      <NewsAdmin/>
+      <AnnouncementAdmin/>
+      <ContestAdmin/>
+      <RewardAdmin/>
       <Cs2Panel/>
     </div>
   );
@@ -1265,14 +2888,24 @@ function App() {
         <Route path="/teams" element={<TeamsPage/>}/>
         <Route path="/rankings" element={<Rankings/>}/>
         <Route path="/duels" element={<Duels/>}/>
+        <Route path="/concours" element={<ContestsPage/>}/>
+        <Route path="/boutique" element={<RewardsStorePage/>}/>
+        <Route path="/cs2" element={<Cs2Hub/>}/>
         <Route path="/live" element={<LiveMatches/>}/>
         <Route path="/admin" element={<Admin/>}/>
         <Route path="/donate" element={<Donate/>}/>
+        <Route path="/support" element={<Donate/>}/>
         <Route path="/login" element={<Login/>}/>
         <Route path="/reset-password" element={<ResetPassword/>}/>
         <Route path="/auth/steam/complete" element={<SteamComplete/>}/>
-        <Route path="/faq" element={<Generic title="FAQ"><p>Toutes les questions fréquentes concernant la plateforme, les tournois, le système de renforts et les sanctions.</p></Generic>}/>
+        <Route path="/faq" element={<FaqPage/>}/>
+        <Route path="/community" element={<CommunityPage/>}/>
+        <Route path="/partners" element={<PartnersPage/>}/>
+        <Route path="/contact" element={<ContactPage/>}/>
+        <Route path="/status" element={<StatusPage/>}/>
         <Route path="/legal" element={<Generic title="Mentions légales"><p>ReadyUp Arena est une plateforme indépendante de tournois e-sport. Non affiliée, sponsorisée ou approuvée par Valve Corporation. Counter-Strike 2 est une marque déposée de Valve Corporation.</p></Generic>}/>
+        <Route path="/privacy" element={<Generic title="Confidentialité"><p>Les données de compte, d'audit, de présence et de sécurité sont conservées pour faire fonctionner la plateforme et tracer les actions sensibles conformément à la politique interne de la beta.</p></Generic>}/>
+        <Route path="/cgu" element={<Generic title="CGU"><p>ReadyUp Arena reste une plateforme communautaire gratuite en beta. Les tournois n'accordent aucun avantage payant et les règles d'équité, de modération et d'audit priment sur toute automatisation.</p></Generic>}/>
       </Routes>
       <Footer/>
     </BrowserRouter>

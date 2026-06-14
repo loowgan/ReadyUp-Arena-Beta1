@@ -307,6 +307,109 @@ ALLOWED_TRANSITIONS = {
 def _clean(doc: dict) -> dict:
     return {k: v for k, v in doc.items() if k != "_id"}
 
+
+def _parse_iso_datetime(value: str, field_name: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        raise HTTPException(400, f"{field_name} est requis")
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, f"{field_name} doit être une date ISO valide")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _normalise_string_list(values: Optional[List[str]]) -> list[str]:
+    if not values:
+        return []
+    return [item.strip() for item in values if item and item.strip()]
+
+
+def _active_announcement(doc: dict, now_iso: str) -> bool:
+    if not doc.get("is_active", True):
+        return False
+    starts_at = doc.get("starts_at")
+    ends_at = doc.get("ends_at")
+    if starts_at and starts_at > now_iso:
+        return False
+    if ends_at and ends_at < now_iso:
+        return False
+    return True
+
+
+def _remaining_slots(max_entries: Optional[int], current_entries: int) -> Optional[int]:
+    if max_entries is None or max_entries <= 0:
+        return None
+    return max(max_entries - current_entries, 0)
+
+
+class TournamentAdminReq(BaseModel):
+    name: str = Field(min_length=3, max_length=80)
+    organizer: str = Field(min_length=2, max_length=64)
+    format: str = Field(min_length=2, max_length=24)
+    mode: str = Field(min_length=2, max_length=64)
+    capacity: int = Field(ge=2, le=256)
+    status: str = Field(default="open")
+    starts_at: str
+    prize: str = Field(default="Récompense à confirmer", max_length=120)
+    region: str = Field(default="EU", min_length=2, max_length=24)
+    level_min: int = Field(default=1, ge=0, le=100)
+    image_color: str = Field(default="#FF4600", min_length=4, max_length=16)
+    description: str = Field(default="", max_length=4000)
+    maps: List[str] = Field(default_factory=list)
+    rules: List[str] = Field(default_factory=list)
+
+
+class NewsAdminReq(BaseModel):
+    title: str = Field(min_length=3, max_length=120)
+    excerpt: str = Field(min_length=8, max_length=400)
+    date: str
+    body: str = Field(default="", max_length=4000)
+
+
+class AnnouncementAdminReq(BaseModel):
+    title: str = Field(min_length=3, max_length=120)
+    body: str = Field(min_length=8, max_length=4000)
+    kind: str = Field(default="info", min_length=2, max_length=24)
+    priority: int = Field(default=1, ge=1, le=5)
+    is_active: bool = True
+    cta_label: str = Field(default="", max_length=40)
+    cta_url: str = Field(default="", max_length=400)
+    starts_at: Optional[str] = None
+    ends_at: Optional[str] = None
+
+
+class ContestAdminReq(BaseModel):
+    title: str = Field(min_length=3, max_length=120)
+    summary: str = Field(min_length=8, max_length=280)
+    body: str = Field(min_length=8, max_length=4000)
+    reward_label: str = Field(default="", max_length=120)
+    max_entries: int = Field(default=250, ge=1, le=100000)
+    is_active: bool = True
+    banner_color: str = Field(default="#FF4600", min_length=4, max_length=16)
+    cta_label: str = Field(default="Participer", max_length=40)
+    cta_url: str = Field(default="/concours", max_length=400)
+    starts_at: str
+    ends_at: Optional[str] = None
+
+
+class RewardAdminReq(BaseModel):
+    title: str = Field(min_length=3, max_length=120)
+    summary: str = Field(min_length=8, max_length=280)
+    description: str = Field(default="", max_length=4000)
+    category: str = Field(default="badge", min_length=2, max_length=32)
+    cost_tokens: int = Field(ge=10, le=100000)
+    stock: int = Field(ge=0, le=100000)
+    is_active: bool = True
+    accent_color: str = Field(default="#00F0FF", min_length=4, max_length=16)
+    delivery_notes: str = Field(default="", max_length=400)
+
+
+class RewardRedemptionStatusReq(BaseModel):
+    status: str = Field(pattern="^(pending|delivered|cancelled)$")
+
 @api_router.get("/teams")
 async def list_teams():
     return await db.teams.find({}, {"_id": 0}).sort("elo", -1).to_list(200)
@@ -344,6 +447,513 @@ async def get_tournament(tid: str):
 @api_router.get("/news")
 async def list_news():
     return await db.news.find({}, {"_id": 0}).sort("date", -1).to_list(50)
+
+
+@api_router.get("/announcements")
+async def list_announcements():
+    docs = await db.announcements.find({}, {"_id": 0}).sort([("priority", -1), ("created_at", -1)]).to_list(50)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return [doc for doc in docs if _active_announcement(doc, now_iso)]
+
+
+@api_router.get("/contests")
+async def list_contests():
+    docs = await db.contests.find({}, {"_id": 0}).sort([("starts_at", -1), ("created_at", -1)]).to_list(50)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    items = []
+    for doc in docs:
+        if not _active_announcement(doc, now_iso):
+            continue
+        entry_count = await db.contest_entries.count_documents({"contest_id": doc["id"]})
+        remaining_slots = _remaining_slots(doc.get("max_entries"), entry_count)
+        items.append({
+            **doc,
+            "entries_count": entry_count,
+            "remaining_slots": remaining_slots,
+            "is_joinable": remaining_slots is None or remaining_slots > 0,
+        })
+    return items
+
+
+@api_router.post("/contests/{contest_id}/join", dependencies=[Depends(get_current_user)])
+async def join_contest(contest_id: str, user=Depends(get_current_user)):
+    contest = await db.contests.find_one({"id": contest_id}, {"_id": 0})
+    if not contest:
+        raise HTTPException(404, "Concours introuvable")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if not _active_announcement(contest, now_iso):
+        raise HTTPException(400, "Concours indisponible")
+    if await db.contest_entries.find_one({"contest_id": contest_id, "user_id": user["id"]}, {"_id": 0}):
+        raise HTTPException(409, "Participation deja enregistree")
+    entry_count = await db.contest_entries.count_documents({"contest_id": contest_id})
+    remaining_slots = _remaining_slots(contest.get("max_entries"), entry_count)
+    if remaining_slots == 0:
+        raise HTTPException(400, "Concours complet")
+    entry = {
+        "id": str(uuid.uuid4()),
+        "contest_id": contest_id,
+        "user_id": user["id"],
+        "pseudo": user["pseudo"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.contest_entries.insert_one(entry)
+    await journal("contest_joined", user["id"], {"contest_id": contest_id, "contest_title": contest.get("title")})
+    return entry
+
+
+@api_router.get("/rewards")
+async def list_rewards():
+    return await db.rewards.find({"is_active": True}, {"_id": 0}).sort([("cost_tokens", 1), ("created_at", -1)]).to_list(100)
+
+
+@api_router.get("/rewards/redemptions/me", dependencies=[Depends(get_current_user)])
+async def my_reward_redemptions(user=Depends(get_current_user)):
+    docs = await db.reward_redemptions.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    reward_ids = [doc.get("reward_id") for doc in docs if doc.get("reward_id")]
+    rewards = await db.rewards.find({"id": {"$in": reward_ids}}, {"_id": 0, "id": 1, "title": 1}).to_list(100) if reward_ids else []
+    title_by_id = {reward["id"]: reward.get("title") for reward in rewards}
+    return [{**doc, "reward_title": title_by_id.get(doc.get("reward_id"))} for doc in docs]
+
+
+@api_router.post("/rewards/{reward_id}/redeem", dependencies=[Depends(get_current_user)])
+async def redeem_reward(reward_id: str, user=Depends(get_current_user)):
+    reward = await db.rewards.find_one({"id": reward_id, "is_active": True}, {"_id": 0})
+    if not reward:
+        raise HTTPException(404, "Reward introuvable")
+    stock = reward.get("stock", 0)
+    if stock <= 0:
+        raise HTTPException(400, "Reward en rupture de stock")
+    current_balance = await get_balance(user["id"])
+    if current_balance < reward["cost_tokens"]:
+        raise HTTPException(400, f"Solde insuffisant ({current_balance} jetons)")
+
+    balance_update = await db.users.update_one(
+        {"id": user["id"], "tokens": {"$gte": reward["cost_tokens"]}},
+        {"$inc": {"tokens": -reward["cost_tokens"]}},
+    )
+    if balance_update.modified_count == 0:
+        raise HTTPException(400, "Impossible de reserver les jetons")
+
+    stock_update = await db.rewards.update_one(
+        {"id": reward_id, "is_active": True, "stock": {"$gt": 0}},
+        {"$inc": {"stock": -1}},
+    )
+    if stock_update.modified_count == 0:
+        await db.users.update_one({"id": user["id"]}, {"$inc": {"tokens": reward["cost_tokens"]}})
+        raise HTTPException(400, "Reward indisponible")
+
+    redemption = {
+        "id": str(uuid.uuid4()),
+        "reward_id": reward_id,
+        "reward_title": reward["title"],
+        "user_id": user["id"],
+        "pseudo": user["pseudo"],
+        "cost_tokens": reward["cost_tokens"],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.reward_redemptions.insert_one(redemption)
+    await journal("reward_redeemed", user["id"], {"reward_id": reward_id, "reward_title": reward["title"], "cost_tokens": reward["cost_tokens"]})
+    return redemption
+
+
+@api_router.get("/admin/news", dependencies=[Depends(get_admin_user)])
+async def admin_list_news():
+    return await db.news.find({}, {"_id": 0}).sort("date", -1).to_list(100)
+
+
+@api_router.post("/admin/news", dependencies=[Depends(get_admin_user)])
+async def admin_create_news(req: NewsAdminReq, admin=Depends(get_admin_user)):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": req.title.strip(),
+        "excerpt": req.excerpt.strip(),
+        "body": req.body.strip(),
+        "date": _parse_iso_datetime(req.date, "date"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": None,
+        "created_by": admin["id"],
+    }
+    await db.news.insert_one(doc)
+    await journal("news_created", admin["id"], {"news_id": doc["id"], "title": doc["title"]})
+    return doc
+
+
+@api_router.patch("/admin/news/{news_id}", dependencies=[Depends(get_admin_user)])
+async def admin_update_news(news_id: str, req: NewsAdminReq, admin=Depends(get_admin_user)):
+    existing = await db.news.find_one({"id": news_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "News introuvable")
+    updates = {
+        "title": req.title.strip(),
+        "excerpt": req.excerpt.strip(),
+        "body": req.body.strip(),
+        "date": _parse_iso_datetime(req.date, "date"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": admin["id"],
+    }
+    await db.news.update_one({"id": news_id}, {"$set": updates})
+    await journal("news_updated", admin["id"], {"news_id": news_id, "title": updates["title"]})
+    return {**existing, **updates}
+
+
+@api_router.delete("/admin/news/{news_id}", dependencies=[Depends(get_admin_user)])
+async def admin_delete_news(news_id: str, admin=Depends(get_admin_user)):
+    deleted = await db.news.find_one_and_delete({"id": news_id}, projection={"_id": 0})
+    if not deleted:
+        raise HTTPException(404, "News introuvable")
+    await journal("news_deleted", admin["id"], {"news_id": news_id, "title": deleted.get("title")})
+    return {"ok": True, "id": news_id}
+
+
+@api_router.get("/admin/announcements", dependencies=[Depends(get_admin_user)])
+async def admin_list_announcements():
+    return await db.announcements.find({}, {"_id": 0}).sort([("priority", -1), ("created_at", -1)]).to_list(100)
+
+
+@api_router.post("/admin/announcements", dependencies=[Depends(get_admin_user)])
+async def admin_create_announcement(req: AnnouncementAdminReq, admin=Depends(get_admin_user)):
+    starts_at = _parse_iso_datetime(req.starts_at, "starts_at") if req.starts_at else None
+    ends_at = _parse_iso_datetime(req.ends_at, "ends_at") if req.ends_at else None
+    if starts_at and ends_at and starts_at > ends_at:
+        raise HTTPException(400, "starts_at doit être antérieur à ends_at")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": req.title.strip(),
+        "body": req.body.strip(),
+        "kind": req.kind.strip().lower(),
+        "priority": req.priority,
+        "is_active": req.is_active,
+        "cta_label": req.cta_label.strip(),
+        "cta_url": req.cta_url.strip(),
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": None,
+        "created_by": admin["id"],
+    }
+    await db.announcements.insert_one(doc)
+    await journal("announcement_created", admin["id"], {"announcement_id": doc["id"], "title": doc["title"]})
+    return doc
+
+
+@api_router.patch("/admin/announcements/{announcement_id}", dependencies=[Depends(get_admin_user)])
+async def admin_update_announcement(announcement_id: str, req: AnnouncementAdminReq, admin=Depends(get_admin_user)):
+    existing = await db.announcements.find_one({"id": announcement_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Annonce introuvable")
+    starts_at = _parse_iso_datetime(req.starts_at, "starts_at") if req.starts_at else None
+    ends_at = _parse_iso_datetime(req.ends_at, "ends_at") if req.ends_at else None
+    if starts_at and ends_at and starts_at > ends_at:
+        raise HTTPException(400, "starts_at doit être antérieur à ends_at")
+    updates = {
+        "title": req.title.strip(),
+        "body": req.body.strip(),
+        "kind": req.kind.strip().lower(),
+        "priority": req.priority,
+        "is_active": req.is_active,
+        "cta_label": req.cta_label.strip(),
+        "cta_url": req.cta_url.strip(),
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": admin["id"],
+    }
+    await db.announcements.update_one({"id": announcement_id}, {"$set": updates})
+    await journal("announcement_updated", admin["id"], {"announcement_id": announcement_id, "title": updates["title"]})
+    return {**existing, **updates}
+
+
+@api_router.delete("/admin/announcements/{announcement_id}", dependencies=[Depends(get_admin_user)])
+async def admin_delete_announcement(announcement_id: str, admin=Depends(get_admin_user)):
+    deleted = await db.announcements.find_one_and_delete({"id": announcement_id}, projection={"_id": 0})
+    if not deleted:
+        raise HTTPException(404, "Annonce introuvable")
+    await journal("announcement_deleted", admin["id"], {"announcement_id": announcement_id, "title": deleted.get("title")})
+    return {"ok": True, "id": announcement_id}
+
+
+@api_router.get("/admin/contests", dependencies=[Depends(get_admin_user)])
+async def admin_list_contests():
+    docs = await db.contests.find({}, {"_id": 0}).sort([("starts_at", -1), ("created_at", -1)]).to_list(100)
+    items = []
+    for doc in docs:
+        entry_count = await db.contest_entries.count_documents({"contest_id": doc["id"]})
+        items.append({**doc, "entries_count": entry_count, "remaining_slots": _remaining_slots(doc.get("max_entries"), entry_count)})
+    return items
+
+
+@api_router.get("/admin/contests/{contest_id}/entries", dependencies=[Depends(get_admin_user)])
+async def admin_list_contest_entries(contest_id: str):
+    return await db.contest_entries.find({"contest_id": contest_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api_router.post("/admin/contests", dependencies=[Depends(get_admin_user)])
+async def admin_create_contest(req: ContestAdminReq, admin=Depends(get_admin_user)):
+    starts_at = _parse_iso_datetime(req.starts_at, "starts_at")
+    ends_at = _parse_iso_datetime(req.ends_at, "ends_at") if req.ends_at else None
+    if ends_at and starts_at > ends_at:
+        raise HTTPException(400, "starts_at doit etre anterieur a ends_at")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": req.title.strip(),
+        "summary": req.summary.strip(),
+        "body": req.body.strip(),
+        "reward_label": req.reward_label.strip(),
+        "max_entries": req.max_entries,
+        "is_active": req.is_active,
+        "banner_color": req.banner_color.strip(),
+        "cta_label": req.cta_label.strip(),
+        "cta_url": req.cta_url.strip(),
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": None,
+        "created_by": admin["id"],
+    }
+    await db.contests.insert_one(doc)
+    await journal("contest_created", admin["id"], {"contest_id": doc["id"], "title": doc["title"]})
+    return doc
+
+
+@api_router.patch("/admin/contests/{contest_id}", dependencies=[Depends(get_admin_user)])
+async def admin_update_contest(contest_id: str, req: ContestAdminReq, admin=Depends(get_admin_user)):
+    existing = await db.contests.find_one({"id": contest_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Concours introuvable")
+    starts_at = _parse_iso_datetime(req.starts_at, "starts_at")
+    ends_at = _parse_iso_datetime(req.ends_at, "ends_at") if req.ends_at else None
+    if ends_at and starts_at > ends_at:
+        raise HTTPException(400, "starts_at doit etre anterieur a ends_at")
+    updates = {
+        "title": req.title.strip(),
+        "summary": req.summary.strip(),
+        "body": req.body.strip(),
+        "reward_label": req.reward_label.strip(),
+        "max_entries": req.max_entries,
+        "is_active": req.is_active,
+        "banner_color": req.banner_color.strip(),
+        "cta_label": req.cta_label.strip(),
+        "cta_url": req.cta_url.strip(),
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": admin["id"],
+    }
+    await db.contests.update_one({"id": contest_id}, {"$set": updates})
+    await journal("contest_updated", admin["id"], {"contest_id": contest_id, "title": updates["title"]})
+    return {**existing, **updates}
+
+
+@api_router.delete("/admin/contests/{contest_id}", dependencies=[Depends(get_admin_user)])
+async def admin_delete_contest(contest_id: str, admin=Depends(get_admin_user)):
+    if await db.contest_entries.count_documents({"contest_id": contest_id}) > 0:
+        raise HTTPException(400, "Ce concours contient deja des participations. Desactivez-le plutot que le supprimer.")
+    deleted = await db.contests.find_one_and_delete({"id": contest_id}, projection={"_id": 0})
+    if not deleted:
+        raise HTTPException(404, "Concours introuvable")
+    await journal("contest_deleted", admin["id"], {"contest_id": contest_id, "title": deleted.get("title")})
+    return {"ok": True, "id": contest_id}
+
+
+@api_router.get("/admin/rewards", dependencies=[Depends(get_admin_user)])
+async def admin_list_rewards():
+    return await db.rewards.find({}, {"_id": 0}).sort([("is_active", -1), ("cost_tokens", 1), ("created_at", -1)]).to_list(100)
+
+
+@api_router.get("/admin/rewards/redemptions", dependencies=[Depends(get_admin_user)])
+async def admin_list_reward_redemptions():
+    return await db.reward_redemptions.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api_router.post("/admin/rewards", dependencies=[Depends(get_admin_user)])
+async def admin_create_reward(req: RewardAdminReq, admin=Depends(get_admin_user)):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": req.title.strip(),
+        "summary": req.summary.strip(),
+        "description": req.description.strip(),
+        "category": req.category.strip().lower(),
+        "cost_tokens": req.cost_tokens,
+        "stock": req.stock,
+        "is_active": req.is_active,
+        "accent_color": req.accent_color.strip(),
+        "delivery_notes": req.delivery_notes.strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": None,
+        "created_by": admin["id"],
+    }
+    await db.rewards.insert_one(doc)
+    await journal("reward_created", admin["id"], {"reward_id": doc["id"], "title": doc["title"]})
+    return doc
+
+
+@api_router.patch("/admin/rewards/{reward_id}", dependencies=[Depends(get_admin_user)])
+async def admin_update_reward(reward_id: str, req: RewardAdminReq, admin=Depends(get_admin_user)):
+    existing = await db.rewards.find_one({"id": reward_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Reward introuvable")
+    updates = {
+        "title": req.title.strip(),
+        "summary": req.summary.strip(),
+        "description": req.description.strip(),
+        "category": req.category.strip().lower(),
+        "cost_tokens": req.cost_tokens,
+        "stock": req.stock,
+        "is_active": req.is_active,
+        "accent_color": req.accent_color.strip(),
+        "delivery_notes": req.delivery_notes.strip(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": admin["id"],
+    }
+    await db.rewards.update_one({"id": reward_id}, {"$set": updates})
+    await journal("reward_updated", admin["id"], {"reward_id": reward_id, "title": updates["title"]})
+    return {**existing, **updates}
+
+
+@api_router.patch("/admin/rewards/redemptions/{redemption_id}", dependencies=[Depends(get_admin_user)])
+async def admin_update_reward_redemption(redemption_id: str, req: RewardRedemptionStatusReq, admin=Depends(get_admin_user)):
+    existing = await db.reward_redemptions.find_one({"id": redemption_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Redemption introuvable")
+    current_status = existing.get("status", "pending")
+    new_status = req.status
+    if current_status == new_status:
+        return existing
+    allowed_transitions = {
+        "pending": {"delivered", "cancelled"},
+        "delivered": {"cancelled"},
+        "cancelled": set(),
+    }
+    if new_status not in allowed_transitions.get(current_status, set()):
+        raise HTTPException(400, f"Transition {current_status} -> {new_status} interdite")
+
+    updates = {
+        "status": new_status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": admin["id"],
+    }
+
+    if new_status == "cancelled":
+        await db.users.update_one({"id": existing["user_id"]}, {"$inc": {"tokens": existing["cost_tokens"]}})
+        await db.rewards.update_one({"id": existing["reward_id"]}, {"$inc": {"stock": 1}})
+        updates["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+        updates["cancelled_by"] = admin["id"]
+    elif new_status == "delivered":
+        updates["delivered_at"] = datetime.now(timezone.utc).isoformat()
+        updates["delivered_by"] = admin["id"]
+
+    await db.reward_redemptions.update_one({"id": redemption_id}, {"$set": updates})
+    await journal("reward_redemption_updated", admin["id"], {"redemption_id": redemption_id, "from": current_status, "to": new_status})
+    return {**existing, **updates}
+
+
+@api_router.delete("/admin/rewards/{reward_id}", dependencies=[Depends(get_admin_user)])
+async def admin_delete_reward(reward_id: str, admin=Depends(get_admin_user)):
+    if await db.reward_redemptions.count_documents({"reward_id": reward_id}) > 0:
+        raise HTTPException(400, "Cette reward possede deja des redemptions. Desactivez-la plutot que la supprimer.")
+    deleted = await db.rewards.find_one_and_delete({"id": reward_id}, projection={"_id": 0})
+    if not deleted:
+        raise HTTPException(404, "Reward introuvable")
+    await journal("reward_deleted", admin["id"], {"reward_id": reward_id, "title": deleted.get("title")})
+    return {"ok": True, "id": reward_id}
+
+
+@api_router.post("/admin/tournaments", dependencies=[Depends(get_admin_user)])
+async def admin_create_tournament(req: TournamentAdminReq, admin=Depends(get_admin_user)):
+    status = req.status.strip()
+    if status not in TOURNAMENT_STATES:
+        raise HTTPException(400, f"Statut inconnu. Choix : {TOURNAMENT_STATES}")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": req.name.strip(),
+        "organizer": req.organizer.strip(),
+        "format": req.format.strip(),
+        "mode": req.mode.strip(),
+        "capacity": req.capacity,
+        "registered": 0,
+        "status": status,
+        "starts_at": _parse_iso_datetime(req.starts_at, "starts_at"),
+        "prize": req.prize.strip(),
+        "region": req.region.strip(),
+        "level_min": req.level_min,
+        "image_color": req.image_color.strip(),
+        "description": req.description.strip(),
+        "maps": _normalise_string_list(req.maps),
+        "rules": _normalise_string_list(req.rules),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": None,
+        "created_by": admin["id"],
+    }
+    await db.tournaments.insert_one(doc)
+    await journal("tournament_created", admin["id"], {"tournament_id": doc["id"], "name": doc["name"]})
+    return doc
+
+
+@api_router.patch("/admin/tournaments/{tid}", dependencies=[Depends(get_admin_user)])
+async def admin_update_tournament(tid: str, req: TournamentAdminReq, admin=Depends(get_admin_user)):
+    existing = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Tournoi introuvable")
+    status = req.status.strip()
+    if status not in TOURNAMENT_STATES:
+        raise HTTPException(400, f"Statut inconnu. Choix : {TOURNAMENT_STATES}")
+    if req.capacity < existing.get("registered", 0):
+        raise HTTPException(400, "La capacité ne peut pas être inférieure au nombre déjà inscrit")
+    updates = {
+        "name": req.name.strip(),
+        "organizer": req.organizer.strip(),
+        "format": req.format.strip(),
+        "mode": req.mode.strip(),
+        "capacity": req.capacity,
+        "status": status,
+        "starts_at": _parse_iso_datetime(req.starts_at, "starts_at"),
+        "prize": req.prize.strip(),
+        "region": req.region.strip(),
+        "level_min": req.level_min,
+        "image_color": req.image_color.strip(),
+        "description": req.description.strip(),
+        "maps": _normalise_string_list(req.maps),
+        "rules": _normalise_string_list(req.rules),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": admin["id"],
+    }
+    await db.tournaments.update_one({"id": tid}, {"$set": updates})
+    await journal("tournament_updated", admin["id"], {"tournament_id": tid, "name": updates["name"]})
+    return {**existing, **updates}
+
+
+@api_router.post("/admin/tournaments/{tid}/duplicate", dependencies=[Depends(get_admin_user)])
+async def admin_duplicate_tournament(tid: str, admin=Depends(get_admin_user)):
+    existing = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Tournoi introuvable")
+    duplicated = {
+        **existing,
+        "id": str(uuid.uuid4()),
+        "name": f"{existing['name']} (copie)",
+        "registered": 0,
+        "status": "open",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": None,
+        "created_by": admin["id"],
+        "updated_by": None,
+        "status_changed_at": None,
+    }
+    await db.tournaments.insert_one(duplicated)
+    await journal("tournament_duplicated", admin["id"], {"source_tournament_id": tid, "tournament_id": duplicated["id"]})
+    return duplicated
+
+
+@api_router.delete("/admin/tournaments/{tid}", dependencies=[Depends(get_admin_user)])
+async def admin_delete_tournament(tid: str, admin=Depends(get_admin_user)):
+    deleted = await db.tournaments.find_one_and_delete({"id": tid}, projection={"_id": 0})
+    if not deleted:
+        raise HTTPException(404, "Tournoi introuvable")
+    await db.tournament_registrations.delete_many({"tournament_id": tid})
+    await db.brackets.delete_many({"tournament_id": tid})
+    await journal("tournament_deleted", admin["id"], {"tournament_id": tid, "name": deleted.get("name")})
+    return {"ok": True, "id": tid}
 
 # ---------- Tournament registration + state machine (Iteration 5) ----------
 class RegisterTournamentReq(BaseModel):
