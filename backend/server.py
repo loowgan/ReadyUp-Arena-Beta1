@@ -446,22 +446,31 @@ def _extract_cswat_object(raw_html: str, needle: str) -> Optional[dict]:
 
 def _extract_cswat_premier_tile(raw_html: str) -> tuple[Optional[int], Optional[str]]:
     section_match = re.search(
-        r"Stats Skill Rating(?P<section>.*?)(?:Member Since|Est\. Playtime|Last 2 Weeks|Leetify|Scope\.gg)",
+        r'id="S:f"(?P<section>.*?)(?:id="S:d"|id="S:7"|id="S:10"|id="cswatch-skill-rating")',
         raw_html,
         re.IGNORECASE | re.DOTALL,
     )
     if not section_match:
+        image_match = re.search(r'%2Fpremier_rating%2F(\d+)\.png', raw_html, re.IGNORECASE)
+        status_match = re.search(r'alt="Unrated"', raw_html, re.IGNORECASE)
+        dash_match = re.search(r'>\s*---\s*<', raw_html)
+        if image_match and (status_match or dash_match):
+            return _coerce_int(image_match.group(1)), "unrated"
+        if status_match or dash_match:
+            return None, "unrated"
+        if image_match:
+            return _coerce_int(image_match.group(1)), "rated"
         return None, None
 
     section = html.unescape(section_match.group("section"))
-    if re.search(r'alt="Unrated"', section, re.IGNORECASE) or re.search(r">\s*---\s*<", section):
-        return None, "unrated"
-
     rating_match = re.search(r'alt="Rating\s+([\d,]+)"', section, re.IGNORECASE)
-    if not rating_match:
+    rating_value = _coerce_int(rating_match.group(1)) if rating_match else None
+    if re.search(r'alt="Unrated"', section, re.IGNORECASE) or re.search(r">\s*---\s*<", section):
+        return rating_value, "unrated"
+    if rating_value is None:
         return None, None
 
-    return _coerce_int(rating_match.group(1)), "rated"
+    return rating_value, "rated"
 
 
 def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
@@ -548,13 +557,60 @@ def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
     return updates
 
 
+def _extract_leetify_premier_rating(payload: dict) -> tuple[Optional[int], Optional[str]]:
+    games = payload.get("games") or []
+    premier_games = []
+    for game in games:
+        if not isinstance(game, dict):
+            continue
+        if not game.get("isCs2"):
+            continue
+        skill_level = _coerce_int(game.get("skillLevel"))
+        if skill_level is None or skill_level <= 0:
+            continue
+        data_source = str(game.get("dataSource") or "").strip().lower()
+        rank_type = _coerce_int(game.get("rankType"))
+        if data_source == "matchmaking" or rank_type == 11:
+            premier_games.append(game)
+
+    if not premier_games:
+        return None, None
+
+    latest_game = max(premier_games, key=lambda game: str(game.get("gameFinishedAt") or ""))
+    return _coerce_int(latest_game.get("skillLevel")), "rated"
+
+
+async def _fetch_leetify_profile_stats(client_http: httpx.AsyncClient, steam_id: str) -> dict:
+    response = await client_http.get(f"https://api.leetify.com/api/profile/id/{steam_id}")
+    if response.status_code >= 400:
+        return {}
+
+    payload = response.json()
+    if not isinstance(payload, dict):
+        return {}
+
+    updates = {}
+    premier_rating, premier_status = _extract_leetify_premier_rating(payload)
+    if premier_rating is not None:
+        updates["premier_rating"] = premier_rating
+    if premier_status:
+        updates["premier_status"] = premier_status
+    return updates
+
+
 async def _fetch_external_stats_for_steam_id(steam_id: str) -> dict:
     profile_url = f"https://cswat.ch/stats/{steam_id}"
     async with httpx.AsyncClient(headers=EXTERNAL_STATS_HEADERS, follow_redirects=True, timeout=20) as client_http:
         response = await client_http.get(profile_url)
+        leetify_updates = await _fetch_leetify_profile_stats(client_http, steam_id)
     if response.status_code >= 400:
         raise RuntimeError(f"CSWAT a répondu {response.status_code}")
-    return _parse_cswat_stats(response.text, steam_id)
+    updates = _parse_cswat_stats(response.text, steam_id)
+    if leetify_updates.get("premier_rating") is not None:
+        updates["premier_rating"] = leetify_updates["premier_rating"]
+    if leetify_updates.get("premier_status"):
+        updates["premier_status"] = leetify_updates["premier_status"]
+    return updates
 
 
 @api_router.post("/stats/sync/me", response_model=UserPublic)

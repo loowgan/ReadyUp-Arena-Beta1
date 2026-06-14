@@ -226,6 +226,12 @@ const formatMetric = (value, digits = 0) => {
   return String(value);
 };
 
+const formatPremierMetric = (value) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toLocaleString("en-US") : String(value);
+};
+
 const hasMetricValue = (value) => value !== null && value !== undefined && value !== "";
 
 const formatPercentMetric = (value, digits = 0) =>
@@ -1137,7 +1143,7 @@ const Profile = () => {
     try {
       const response = await axios.post(`${API}/stats/sync/me`, {}, { headers: { Authorization: `Bearer ${token}` } });
       setUser(response.data);
-      setSyncMessage("Stats remplacees par le dernier snapshot public CSWAT/FACEIT disponible.");
+      setSyncMessage("Stats remplacees par le dernier snapshot public CSWAT/FACEIT/Leetify disponible.");
     } catch (err) {
       setSyncError(err?.response?.data?.detail || "Synchronisation impossible pour le moment.");
     } finally {
@@ -1147,10 +1153,10 @@ const Profile = () => {
   const statCards = [
     { label: "ELO plateforme", value: formatMetric(p.platform_elo ?? p.elo), src: p.stats_sources?.platform || "ReadyUp Arena", state: "synced", color: "text-orange-500" },
     {
-      label: "Premier Rating",
-      value: hasMetricValue(p.premier_rating) ? formatMetric(p.premier_rating) : p.premier_status === "unrated" ? "Non classe" : formatMetric(p.premier_rating),
+      label: "Note Premier",
+      value: formatPremierMetric(p.premier_rating),
       src: p.stats_sources?.premier || "Valve Premier",
-      state: hasMetricValue(p.premier_rating) ? "synced" : p.premier_status === "unrated" ? "non classe" : "indisponible",
+      state: p.premier_status === "unrated" ? "non classe" : hasMetricValue(p.premier_rating) ? "synced" : "indisponible",
       color: "text-red-500",
     },
     { label: "FACEIT ELO", value: formatMetric(p.faceit_elo), src: p.stats_sources?.faceit || "FACEIT", state: hasMetricValue(p.faceit_elo) ? "synced" : "non lié", color: "text-cyan-neon" },
