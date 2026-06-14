@@ -148,6 +148,8 @@ class UserPublic(BaseModel):
     steam_verified: bool
     created_at: str
     is_admin: bool = False
+    team_id: Optional[str] = None
+    team_role: Optional[str] = None
 
 def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=12)).decode()
@@ -243,7 +245,9 @@ def user_to_public(u: dict) -> dict:
             "xp": u.get("xp",0), **_public_stats_payload(u),
             "steam_verified": u.get("steam_verified", False),
             "created_at": u["created_at"],
-            "is_admin": is_admin_email(u.get("email"))}
+            "is_admin": is_admin_email(u.get("email")),
+            "team_id": u.get("team_id"),
+            "team_role": u.get("team_role")}
 
 async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer)):
     if not creds: raise HTTPException(401, "Token requis")
@@ -273,6 +277,7 @@ async def register(req: RegisterReq, request: Request):
         "rank_cs2": None, "role": "Polyvalent", "reliability": 50,
         "stats_last_sync_at": None,
         "steam_verified": False, "steam_id": None,
+        "team_id": None, "team_role": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "ip": request.client.host if request.client else None,
     }
@@ -856,9 +861,308 @@ class RewardAdminReq(BaseModel):
 class RewardRedemptionStatusReq(BaseModel):
     status: str = Field(pattern="^(pending|delivered|cancelled)$")
 
+
+class TeamCreateReq(BaseModel):
+    name: str = Field(min_length=3, max_length=48)
+    tag: str = Field(min_length=2, max_length=6)
+    country: str = Field(default="FR", min_length=2, max_length=24)
+    description: str = Field(default="", max_length=500)
+    language: str = Field(default="FR", min_length=2, max_length=24)
+    discord_url: Optional[str] = Field(default=None, max_length=400)
+    logo_color: str = Field(default="#FF4600", min_length=4, max_length=16)
+    recruitment_status: str = Field(default="open", pattern="^(open|closed)$")
+    members_limit: int = Field(default=7, ge=1, le=12)
+
+
+class TeamUpdateReq(BaseModel):
+    name: str = Field(min_length=3, max_length=48)
+    tag: str = Field(min_length=2, max_length=6)
+    country: str = Field(default="FR", min_length=2, max_length=24)
+    description: str = Field(default="", max_length=500)
+    language: str = Field(default="FR", min_length=2, max_length=24)
+    discord_url: Optional[str] = Field(default=None, max_length=400)
+    logo_color: str = Field(default="#FF4600", min_length=4, max_length=16)
+    recruitment_status: str = Field(default="open", pattern="^(open|closed)$")
+    members_limit: int = Field(default=7, ge=1, le=12)
+
+
+class TeamApplicationReq(BaseModel):
+    role: str = Field(default="Polyvalent", min_length=2, max_length=32)
+    message: str = Field(default="", max_length=500)
+
+
+async def _collect_team_members(team_id: str) -> list[dict]:
+    user_members = await db.users.find(
+        {"team_id": team_id},
+        {"_id": 0, "id": 1, "pseudo": 1, "country": 1, "role": 1, "steam_verified": 1, "team_role": 1},
+    ).to_list(30)
+    player_members = await db.players.find(
+        {"team_id": team_id},
+        {"_id": 0, "id": 1, "pseudo": 1, "country": 1, "role": 1, "steam_verified": 1, "online": 1},
+    ).to_list(30)
+
+    members: list[dict] = []
+    seen: set[str] = set()
+    for doc in user_members:
+        key = str(doc.get("id") or doc.get("pseudo") or uuid.uuid4())
+        if key in seen:
+            continue
+        seen.add(key)
+        members.append({
+            "id": doc.get("id"),
+            "pseudo": doc.get("pseudo"),
+            "country": doc.get("country"),
+            "role": doc.get("role") or "Polyvalent",
+            "steam_verified": bool(doc.get("steam_verified")),
+            "team_role": doc.get("team_role") or "member",
+            "source": "user",
+        })
+    for doc in player_members:
+        key = str(doc.get("id") or doc.get("pseudo") or uuid.uuid4())
+        if key in seen:
+            continue
+        seen.add(key)
+        members.append({
+            "id": doc.get("id"),
+            "pseudo": doc.get("pseudo"),
+            "country": doc.get("country"),
+            "role": doc.get("role") or "Polyvalent",
+            "steam_verified": bool(doc.get("steam_verified")),
+            "team_role": "seeded",
+            "source": "seed",
+            "online": bool(doc.get("online", False)),
+        })
+    return members
+
+
+async def _team_public(team_doc: dict, include_members: bool = False) -> dict:
+    members = await _collect_team_members(team_doc["id"])
+    captain = next((member for member in members if member.get("team_role") == "captain"), None)
+    return {
+        **team_doc,
+        "members_count": len(members),
+        "members_limit": int(team_doc.get("members_limit", 7)),
+        "captain_pseudo": team_doc.get("captain_pseudo") or (captain or {}).get("pseudo"),
+        "recruitment_status": team_doc.get("recruitment_status", "open"),
+        "description": team_doc.get("description", ""),
+        "language": team_doc.get("language", "FR"),
+        "discord_url": team_doc.get("discord_url"),
+        "members": members if include_members else [],
+        "pending_applications": await db.team_applications.count_documents({"team_id": team_doc["id"], "status": "pending"}),
+    }
+
+
+async def _get_team_or_404(team_id: str) -> dict:
+    team = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    if not team:
+        raise HTTPException(404, "Equipe introuvable")
+    return team
+
+
+def _is_team_captain(team: dict, user: dict) -> bool:
+    return team.get("captain_user_id") == user["id"]
+
+
 @api_router.get("/teams")
 async def list_teams():
-    return await db.teams.find({}, {"_id": 0}).sort("elo", -1).to_list(200)
+    docs = await db.teams.find({}, {"_id": 0}).sort("elo", -1).to_list(200)
+    return [await _team_public(doc) for doc in docs]
+
+
+@api_router.get("/teams/me", dependencies=[Depends(get_current_user)])
+async def my_team(user=Depends(get_current_user)):
+    team_id = user.get("team_id")
+    if not team_id:
+        return {"team": None}
+    team = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    if not team:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"team_id": None, "team_role": None}})
+        return {"team": None}
+    return {"team": await _team_public(team, include_members=True)}
+
+
+@api_router.get("/teams/{team_id}")
+async def get_team(team_id: str):
+    team = await _get_team_or_404(team_id)
+    return await _team_public(team, include_members=True)
+
+
+@api_router.post("/teams", dependencies=[Depends(get_current_user)])
+async def create_team(req: TeamCreateReq, user=Depends(get_current_user)):
+    if user.get("team_id"):
+        raise HTTPException(409, "Vous faites deja partie d'une equipe")
+    if await db.teams.find_one({"$or": [{"name": req.name.strip()}, {"tag": req.tag.strip().upper()}]}, {"_id": 0, "id": 1}):
+        raise HTTPException(409, "Nom ou tag d'equipe deja utilise")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    team = {
+        "id": str(uuid.uuid4()),
+        "name": req.name.strip(),
+        "tag": req.tag.strip().upper(),
+        "logo_color": req.logo_color.strip(),
+        "country": req.country.strip().upper(),
+        "level": 1,
+        "elo": 1000,
+        "wins": 0,
+        "losses": 0,
+        "trophies": 0,
+        "reliability": 50,
+        "description": req.description.strip(),
+        "language": req.language.strip().upper(),
+        "discord_url": req.discord_url.strip() if req.discord_url else None,
+        "recruitment_status": req.recruitment_status,
+        "members_limit": req.members_limit,
+        "captain_user_id": user["id"],
+        "captain_pseudo": user["pseudo"],
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "created_by": user["id"],
+    }
+    await db.teams.insert_one(team)
+    await db.users.update_one({"id": user["id"]}, {"$set": {"team_id": team["id"], "team_role": "captain"}})
+    await journal("team_created", user["id"], {"team_id": team["id"], "name": team["name"]})
+    return await _team_public(team, include_members=True)
+
+
+@api_router.patch("/teams/{team_id}", dependencies=[Depends(get_current_user)])
+async def update_team(team_id: str, req: TeamUpdateReq, user=Depends(get_current_user)):
+    team = await _get_team_or_404(team_id)
+    if not (_is_team_captain(team, user) or is_admin_email(user.get("email"))):
+        raise HTTPException(403, "Seul le capitaine peut modifier cette equipe")
+
+    if req.members_limit < 1:
+        raise HTTPException(400, "Limite de membres invalide")
+    members = await _collect_team_members(team_id)
+    if req.members_limit < len(members):
+        raise HTTPException(400, "La limite ne peut pas etre inferieure au nombre de membres")
+
+    duplicate = await db.teams.find_one(
+        {"id": {"$ne": team_id}, "$or": [{"name": req.name.strip()}, {"tag": req.tag.strip().upper()}]},
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        raise HTTPException(409, "Nom ou tag d'equipe deja utilise")
+
+    updates = {
+        "name": req.name.strip(),
+        "tag": req.tag.strip().upper(),
+        "logo_color": req.logo_color.strip(),
+        "country": req.country.strip().upper(),
+        "description": req.description.strip(),
+        "language": req.language.strip().upper(),
+        "discord_url": req.discord_url.strip() if req.discord_url else None,
+        "recruitment_status": req.recruitment_status,
+        "members_limit": req.members_limit,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.teams.update_one({"id": team_id}, {"$set": updates})
+    await journal("team_updated", user["id"], {"team_id": team_id, "name": updates["name"]})
+    updated = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    return await _team_public(updated, include_members=True)
+
+
+@api_router.post("/teams/{team_id}/applications", dependencies=[Depends(get_current_user)])
+async def apply_to_team(team_id: str, req: TeamApplicationReq, user=Depends(get_current_user)):
+    team = await _get_team_or_404(team_id)
+    if user.get("team_id"):
+        raise HTTPException(409, "Vous etes deja rattache a une equipe")
+    if team.get("recruitment_status", "open") != "open":
+        raise HTTPException(400, "Cette equipe n'accepte pas de candidatures pour le moment")
+    if await db.team_applications.find_one({"team_id": team_id, "user_id": user["id"], "status": "pending"}, {"_id": 0, "id": 1}):
+        raise HTTPException(409, "Candidature deja envoyee")
+
+    application = {
+        "id": str(uuid.uuid4()),
+        "team_id": team_id,
+        "user_id": user["id"],
+        "pseudo": user["pseudo"],
+        "role": req.role.strip(),
+        "message": req.message.strip(),
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.team_applications.insert_one(application)
+    await journal("team_application_created", user["id"], {"team_id": team_id})
+    return application
+
+
+@api_router.get("/teams/{team_id}/applications", dependencies=[Depends(get_current_user)])
+async def list_team_applications(team_id: str, user=Depends(get_current_user)):
+    team = await _get_team_or_404(team_id)
+    if not (_is_team_captain(team, user) or is_admin_email(user.get("email"))):
+        raise HTTPException(403, "Acces reserve au capitaine de l'equipe")
+    return await db.team_applications.find({"team_id": team_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+
+
+@api_router.post("/teams/{team_id}/applications/{application_id}/approve", dependencies=[Depends(get_current_user)])
+async def approve_team_application(team_id: str, application_id: str, user=Depends(get_current_user)):
+    team = await _get_team_or_404(team_id)
+    if not (_is_team_captain(team, user) or is_admin_email(user.get("email"))):
+        raise HTTPException(403, "Acces reserve au capitaine de l'equipe")
+
+    application = await db.team_applications.find_one({"id": application_id, "team_id": team_id}, {"_id": 0})
+    if not application:
+        raise HTTPException(404, "Candidature introuvable")
+    if application.get("status") != "pending":
+        raise HTTPException(400, "Cette candidature a deja ete traitee")
+
+    applicant = await db.users.find_one({"id": application["user_id"]}, {"_id": 0})
+    if not applicant:
+        raise HTTPException(404, "Utilisateur introuvable")
+    if applicant.get("team_id"):
+        raise HTTPException(409, "Ce joueur a deja rejoint une autre equipe")
+
+    members = await _collect_team_members(team_id)
+    if len(members) >= int(team.get("members_limit", 7)):
+        raise HTTPException(400, "Equipe complete")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": applicant["id"]}, {"$set": {"team_id": team_id, "team_role": "member"}})
+    await db.team_applications.update_one({"id": application_id}, {"$set": {"status": "approved", "updated_at": now_iso, "handled_by": user["id"]}})
+    await journal("team_application_approved", user["id"], {"team_id": team_id, "application_id": application_id, "user_id": applicant["id"]})
+    updated = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    return await _team_public(updated, include_members=True)
+
+
+@api_router.post("/teams/{team_id}/applications/{application_id}/reject", dependencies=[Depends(get_current_user)])
+async def reject_team_application(team_id: str, application_id: str, user=Depends(get_current_user)):
+    team = await _get_team_or_404(team_id)
+    if not (_is_team_captain(team, user) or is_admin_email(user.get("email"))):
+        raise HTTPException(403, "Acces reserve au capitaine de l'equipe")
+    application = await db.team_applications.find_one({"id": application_id, "team_id": team_id}, {"_id": 0})
+    if not application:
+        raise HTTPException(404, "Candidature introuvable")
+    if application.get("status") != "pending":
+        raise HTTPException(400, "Cette candidature a deja ete traitee")
+    await db.team_applications.update_one(
+        {"id": application_id},
+        {"$set": {"status": "rejected", "updated_at": datetime.now(timezone.utc).isoformat(), "handled_by": user["id"]}},
+    )
+    await journal("team_application_rejected", user["id"], {"team_id": team_id, "application_id": application_id})
+    return {"ok": True, "id": application_id, "status": "rejected"}
+
+
+@api_router.post("/teams/{team_id}/leave", dependencies=[Depends(get_current_user)])
+async def leave_team(team_id: str, user=Depends(get_current_user)):
+    team = await _get_team_or_404(team_id)
+    if user.get("team_id") != team_id:
+        raise HTTPException(400, "Vous n'etes pas membre de cette equipe")
+
+    if _is_team_captain(team, user):
+        user_members = await db.users.find({"team_id": team_id}, {"_id": 0, "id": 1}).to_list(20)
+        if len(user_members) > 1:
+            raise HTTPException(400, "Transfert de capitanat requis avant de quitter l'equipe")
+        await db.users.update_one({"id": user["id"]}, {"$set": {"team_id": None, "team_role": None}})
+        await db.teams.delete_one({"id": team_id})
+        await db.team_applications.delete_many({"team_id": team_id})
+        await db.tournament_registrations.delete_many({"entity_type": "team", "entity_id": team_id})
+        await journal("team_disbanded", user["id"], {"team_id": team_id, "name": team.get("name")})
+        return {"ok": True, "disbanded": True}
+
+    await db.users.update_one({"id": user["id"]}, {"$set": {"team_id": None, "team_role": None}})
+    await journal("team_left", user["id"], {"team_id": team_id})
+    return {"ok": True, "disbanded": False}
 
 @api_router.get("/players")
 async def list_players(available_only: bool = False):
@@ -1419,9 +1723,26 @@ async def register_tournament(tid: str, req: RegisterTournamentReq, user=Depends
         raise HTTPException(400, "Tournoi complet")
     if await db.tournament_registrations.find_one({"tournament_id": tid, "user_id": user["id"]}):
         raise HTTPException(409, "Déjà inscrit à ce tournoi")
+
+    entity_id = req.entity_id
+    entity_name = req.entity_name
+    if req.entity_type == "team":
+        team_id = user.get("team_id")
+        if not team_id:
+            raise HTTPException(400, "Créez ou rejoignez une équipe avant l'inscription tournoi")
+        team = await db.teams.find_one({"id": team_id}, {"_id": 0})
+        if not team:
+            raise HTTPException(404, "Equipe introuvable")
+        if team.get("captain_user_id") != user["id"]:
+            raise HTTPException(403, "Seul le capitaine peut inscrire l'equipe")
+        if await db.tournament_registrations.find_one({"tournament_id": tid, "entity_type": "team", "entity_id": team_id}, {"_id": 0, "id": 1}):
+            raise HTTPException(409, "Cette equipe est deja inscrite au tournoi")
+        entity_id = team_id
+        entity_name = team["name"]
+
     reg = {"id": str(uuid.uuid4()), "tournament_id": tid, "user_id": user["id"],
-           "entity_type": req.entity_type, "entity_id": req.entity_id,
-           "entity_name": req.entity_name, "created_at": datetime.now(timezone.utc).isoformat()}
+           "entity_type": req.entity_type, "entity_id": entity_id,
+           "entity_name": entity_name, "created_at": datetime.now(timezone.utc).isoformat()}
     await db.tournament_registrations.insert_one(reg)
     new_status = "registering" if t["status"] == "open" else t["status"]
     await db.tournaments.update_one({"id": tid}, {"$inc": {"registered": 1}, "$set": {"status": new_status}})
@@ -1543,6 +1864,7 @@ async def steam_callback(request: Request):
             "rank_cs2": None, "role": "Polyvalent", "reliability": 55,
             "stats_last_sync_at": None,
             "steam_verified": True, "steam_id": steam_id,
+            "team_id": None, "team_role": None,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(user)

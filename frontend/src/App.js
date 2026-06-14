@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import { BrowserRouter, Routes, Route, Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
@@ -171,6 +171,18 @@ const makeTournamentForm = () => ({
   description: "",
   maps_text: "Mirage\nInferno\nAnubis",
   rules_text: "Présence requise avant le verrouillage du roster.\nLes remplacements suivent les règles de la salle d'attente.",
+});
+
+const makeTeamForm = () => ({
+  name: "",
+  tag: "",
+  country: "FR",
+  description: "",
+  language: "FR",
+  discord_url: "",
+  logo_color: "#FF4600",
+  recruitment_status: "open",
+  members_limit: 7,
 });
 
 const makeNewsForm = () => ({
@@ -678,12 +690,21 @@ const TournamentDetail = () => {
   }, [id]);
   const register = async (entity_type) => {
     if (!token) { alert("Connectez-vous pour vous inscrire."); return; }
-    const entity_name = entity_type === "team"
-      ? (prompt("Nom de votre équipe ?") || "").trim()
-      : (user?.pseudo || "Joueur");
-    if (entity_type === "team" && !entity_name) return;
+    if (entity_type === "team" && !user?.team_id) {
+      alert("Créez ou rejoignez une équipe avant l'inscription tournoi.");
+      return;
+    }
+    if (entity_type === "team" && user?.team_role !== "captain") {
+      alert("Seul le capitaine peut inscrire l'équipe au tournoi.");
+      return;
+    }
+    const entity_name = entity_type === "team" ? (user?.pseudo || "Equipe") : (user?.pseudo || "Joueur");
     try {
-      await axios.post(`${API}/tournaments/${id}/register`, { entity_type, entity_name }, { headers: { Authorization: `Bearer ${token}` } });
+      await axios.post(
+        `${API}/tournaments/${id}/register`,
+        { entity_type, entity_name, entity_id: entity_type === "team" ? user?.team_id : undefined },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
       await load();
       alert("Inscription confirmée ✅");
     } catch (e) { alert(e.response?.data?.detail || "Erreur d'inscription"); }
@@ -707,7 +728,14 @@ const TournamentDetail = () => {
         <div className="mt-6 flex gap-2 flex-wrap">
           {canRegister ? (
             <>
-              <button onClick={() => register("team")} className="btn-neon" data-testid="register-team-btn"><Users size={14}/>Inscrire mon équipe</button>
+              <button
+                onClick={() => register("team")}
+                className="btn-neon"
+                data-testid="register-team-btn"
+                disabled={!user?.team_id || user?.team_role !== "captain"}
+              >
+                <Users size={14}/>{!user?.team_id ? "Créer une équipe d'abord" : user?.team_role !== "captain" ? "Capitaine requis" : "Inscrire mon équipe"}
+              </button>
               <button onClick={() => register("solo")} className="btn-ghost" data-testid="register-solo-btn"><User size={14}/>Rejoindre la file solo</button>
             </>
           ) : (
@@ -1359,6 +1387,8 @@ const Profile = () => {
     opening_duels_rating: null,
     clutching_rating: null,
     stats_sources: {},
+    team_id: null,
+    team_role: null,
   };
   const p = currentUser
     ? { ...emptyProfile, ...currentUser, xp_next: Math.max((currentUser.xp || 0) + 500, 1000) }
@@ -1646,23 +1676,325 @@ const Profile = () => {
 
 /* ============== TEAMS ============== */
 const TeamsPage = () => {
+  const { token, user, refreshUser } = useAuth();
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
   const [teams, setTeams] = useState([]);
-  useEffect(() => { axios.get(`${API}/teams`).then(r => setTeams(r.data)); }, []);
+  const [myTeam, setMyTeam] = useState(null);
+  const [applications, setApplications] = useState([]);
+  const [teamForm, setTeamForm] = useState(makeTeamForm());
+  const [applyTarget, setApplyTarget] = useState(null);
+  const [applyForm, setApplyForm] = useState({ role: "Polyvalent", message: "" });
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const isCaptain = user?.team_role === "captain";
+
+  const loadTeamContext = useCallback(async () => {
+    const teamsResponse = await axios.get(`${API}/teams`);
+    setTeams(teamsResponse.data || []);
+    if (!token) {
+      setMyTeam(null);
+      setApplications([]);
+      return;
+    }
+    const myTeamResponse = await axios.get(`${API}/teams/me`, { headers: { Authorization: `Bearer ${token}` } });
+    const team = myTeamResponse.data?.team || null;
+    setMyTeam(team);
+    if (team && user?.team_role === "captain") {
+      const appsResponse = await axios.get(`${API}/teams/${team.id}/applications`, { headers: { Authorization: `Bearer ${token}` } });
+      setApplications(appsResponse.data || []);
+    } else {
+      setApplications([]);
+    }
+  }, [token, user?.team_role]);
+
+  useEffect(() => {
+    loadTeamContext().catch(() => {
+      setError("Impossible de charger les equipes pour le moment.");
+    });
+  }, [loadTeamContext]);
+
+  useEffect(() => {
+    if (myTeam && isCaptain) {
+      setTeamForm({
+        name: myTeam.name || "",
+        tag: myTeam.tag || "",
+        country: myTeam.country || "FR",
+        description: myTeam.description || "",
+        language: myTeam.language || "FR",
+        discord_url: myTeam.discord_url || "",
+        logo_color: myTeam.logo_color || "#FF4600",
+        recruitment_status: myTeam.recruitment_status || "open",
+        members_limit: myTeam.members_limit || 7,
+      });
+    } else if (!myTeam) {
+      setTeamForm(makeTeamForm());
+    }
+  }, [myTeam, isCaptain]);
+
+  const refreshAll = async () => {
+    await refreshUser(token);
+    await loadTeamContext();
+  };
+
+  const submitTeam = async (event) => {
+    event.preventDefault();
+    if (!token) {
+      setError("Connectez-vous pour creer une equipe.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      if (myTeam && isCaptain) {
+        await axios.patch(`${API}/teams/${myTeam.id}`, { ...teamForm, members_limit: Number(teamForm.members_limit) }, { headers: authH });
+        setMessage("Equipe mise a jour.");
+      } else {
+        await axios.post(`${API}/teams`, { ...teamForm, members_limit: Number(teamForm.members_limit) }, { headers: authH });
+        setMessage("Equipe creee et capitaine assigne.");
+      }
+      await refreshAll();
+    } catch (submitError) {
+      setError(submitError?.response?.data?.detail || "Operation equipe impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitApplication = async (teamId) => {
+    if (!token) {
+      setError("Connectez-vous pour candidater.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      await axios.post(`${API}/teams/${teamId}/applications`, applyForm, { headers: authH });
+      setApplyTarget(null);
+      setApplyForm({ role: "Polyvalent", message: "" });
+      setMessage("Candidature envoyee au capitaine.");
+      await loadTeamContext();
+    } catch (submitError) {
+      setError(submitError?.response?.data?.detail || "Candidature impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleApplication = async (applicationId, decision) => {
+    if (!myTeam) return;
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      await axios.post(`${API}/teams/${myTeam.id}/applications/${applicationId}/${decision}`, {}, { headers: authH });
+      setMessage(decision === "approve" ? "Candidature approuvee." : "Candidature refusee.");
+      await refreshAll();
+    } catch (decisionError) {
+      setError(decisionError?.response?.data?.detail || "Traitement impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const leaveMyTeam = async () => {
+    if (!myTeam || !window.confirm("Quitter votre equipe actuelle ?")) return;
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const response = await axios.post(`${API}/teams/${myTeam.id}/leave`, {}, { headers: authH });
+      setMessage(response.data?.disbanded ? "Equipe dissoute." : "Vous avez quitte l'equipe.");
+      await refreshAll();
+    } catch (leaveError) {
+      setError(leaveError?.response?.data?.detail || "Impossible de quitter l'equipe.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="teams-page">
       <h1 className="font-display text-5xl uppercase">Équipes</h1>
+      <p className="text-white/50 mt-2">Creation, candidature et pilotage d'equipe sont maintenant relies au compte joueur et a l'inscription tournoi.</p>
+      {(message || error) && <div className={`mt-4 text-sm ${error ? "text-red-400" : "text-cyan-neon"}`}>{error || message}</div>}
+
+      {user && (
+        <div className="grid xl:grid-cols-[1.1fr_0.9fr] gap-6 mt-8">
+          <div className="glass p-6">
+            <div className="text-xs uppercase tracking-widest text-orange-500">{myTeam ? "Mon equipe" : "Creation"}</div>
+            <h2 className="font-display text-3xl uppercase mt-3">{myTeam ? myTeam.name : "Creer une equipe"}</h2>
+            <p className="text-white/60 mt-3">
+              {myTeam
+                ? "Le capitaine peut ajuster l'identite, ouvrir ou fermer le recrutement et gerer les candidatures."
+                : "Le createur devient capitaine et pourra inscrire l'equipe aux tournois."}
+            </p>
+
+            {myTeam && (
+              <div className="grid md:grid-cols-3 gap-4 mt-6">
+                <div className="border border-white/10 p-4">
+                  <div className="text-xs uppercase tracking-widest text-white/40">Membres</div>
+                  <div className="font-display text-3xl mt-2">{myTeam.members_count}/{myTeam.members_limit}</div>
+                </div>
+                <div className="border border-white/10 p-4">
+                  <div className="text-xs uppercase tracking-widest text-white/40">Capitaine</div>
+                  <div className="font-display text-xl mt-2">{myTeam.captain_pseudo || "—"}</div>
+                </div>
+                <div className="border border-white/10 p-4">
+                  <div className="text-xs uppercase tracking-widest text-white/40">Recrutement</div>
+                  <div className="font-display text-xl mt-2">{myTeam.recruitment_status === "open" ? "Ouvert" : "Fermé"}</div>
+                </div>
+              </div>
+            )}
+
+            {(!myTeam || isCaptain) ? (
+              <form onSubmit={submitTeam} className="grid md:grid-cols-2 gap-4 mt-6" data-testid="team-form">
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Nom</label>
+                  <input value={teamForm.name} onChange={(e)=>setTeamForm({...teamForm, name: e.target.value})} minLength={3} maxLength={48} required />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Tag</label>
+                  <input value={teamForm.tag} onChange={(e)=>setTeamForm({...teamForm, tag: e.target.value.toUpperCase()})} minLength={2} maxLength={6} required />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Pays</label>
+                  <input value={teamForm.country} onChange={(e)=>setTeamForm({...teamForm, country: e.target.value.toUpperCase()})} maxLength={24} required />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Langue</label>
+                  <input value={teamForm.language} onChange={(e)=>setTeamForm({...teamForm, language: e.target.value.toUpperCase()})} maxLength={24} required />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Couleur logo</label>
+                  <input value={teamForm.logo_color} onChange={(e)=>setTeamForm({...teamForm, logo_color: e.target.value})} placeholder="#FF4600" required />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Limite membres</label>
+                  <input type="number" min="1" max="12" value={teamForm.members_limit} onChange={(e)=>setTeamForm({...teamForm, members_limit: e.target.value})} required />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="text-xs uppercase tracking-widest text-white/40">Discord / lien vocal</label>
+                  <input value={teamForm.discord_url} onChange={(e)=>setTeamForm({...teamForm, discord_url: e.target.value})} placeholder="https://discord.gg/..." />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="text-xs uppercase tracking-widest text-white/40">Description</label>
+                  <textarea rows={4} value={teamForm.description} onChange={(e)=>setTeamForm({...teamForm, description: e.target.value})} maxLength={500} />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Recrutement</label>
+                  <select value={teamForm.recruitment_status} onChange={(e)=>setTeamForm({...teamForm, recruitment_status: e.target.value})}>
+                    <option value="open">Ouvert</option>
+                    <option value="closed">Fermé</option>
+                  </select>
+                </div>
+                <div className="md:col-span-2 flex gap-3 flex-wrap">
+                  <button disabled={busy} className="btn-neon">
+                    <Users size={14}/>{myTeam ? "Mettre a jour l'equipe" : "Creer mon equipe"}
+                  </button>
+                  {myTeam && <button type="button" disabled={busy} onClick={leaveMyTeam} className="btn-ghost text-red-400">Quitter l'equipe</button>}
+                </div>
+              </form>
+            ) : (
+              <div className="mt-6">
+                <div className="text-white/60">Vous etes membre. Le capitaine gere cette equipe depuis ce panneau.</div>
+                <button type="button" disabled={busy} onClick={leaveMyTeam} className="btn-ghost text-red-400 mt-4">Quitter l'equipe</button>
+              </div>
+            )}
+
+            {myTeam?.members?.length > 0 && (
+              <div className="mt-6">
+                <div className="text-xs uppercase tracking-widest text-white/40 mb-3">Roster actuel</div>
+                <div className="space-y-2">
+                  {myTeam.members.map((member) => (
+                    <div key={`${member.source}-${member.id || member.pseudo}`} className="border border-white/10 p-3 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="font-display uppercase">{member.pseudo}</div>
+                        <div className="text-xs text-white/40">{member.role} • {member.team_role}</div>
+                      </div>
+                      {member.steam_verified && <Badge variant="verified">Steam vérifié</Badge>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="glass p-6">
+            <div className="text-xs uppercase tracking-widest text-orange-500">Fonctionnement</div>
+            <h2 className="font-display text-3xl uppercase mt-3">Cycle equipe</h2>
+            <div className="space-y-3 mt-6 text-sm text-white/70">
+              <div className="border border-white/10 p-4">1. Un joueur cree l'equipe et devient capitaine.</div>
+              <div className="border border-white/10 p-4">2. Le recrutement peut rester ouvert pour recevoir des candidatures.</div>
+              <div className="border border-white/10 p-4">3. Le capitaine valide ou refuse les demandes entrantes.</div>
+              <div className="border border-white/10 p-4">4. Seul le capitaine peut inscrire l'equipe dans un tournoi.</div>
+              <div className="border border-white/10 p-4">5. Les membres peuvent quitter l'equipe; le capitaine peut la dissoudre s'il reste seul.</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {myTeam && isCaptain && (
+        <div className="glass p-6 mt-6">
+          <div className="text-xs uppercase tracking-widest text-orange-500">Recrutement</div>
+          <h2 className="font-display text-3xl uppercase mt-3">Candidatures en attente</h2>
+          <div className="space-y-3 mt-5">
+            {applications.filter((item) => item.status === "pending").length === 0 && <div className="text-white/40">Aucune candidature en attente.</div>}
+            {applications.filter((item) => item.status === "pending").map((item) => (
+              <div key={item.id} className="border border-white/10 p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="font-display uppercase">{item.pseudo}</div>
+                  <div className="text-xs text-white/40 mt-1">{item.role}</div>
+                  {item.message && <p className="text-sm text-white/60 mt-2">{item.message}</p>}
+                </div>
+                <div className="flex gap-2">
+                  <button disabled={busy} onClick={() => handleApplication(item.id, "approve")} className="btn-neon text-xs">Accepter</button>
+                  <button disabled={busy} onClick={() => handleApplication(item.id, "reject")} className="btn-ghost text-xs">Refuser</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
         {teams.map((t,i) => (
           <div key={t.id} className="glass glass-hover p-6" data-testid={`team-${t.id}`}>
             <div className="flex items-start justify-between"><TeamLogo team={t} size={64}/><span className="font-mono-display text-white/30">#{i+1}</span></div>
             <h3 className="font-display text-2xl mt-3">{t.name}</h3>
             <p className="text-white/40 text-sm">{t.tag} • {t.country}</p>
+            <p className="text-white/60 text-sm mt-3 min-h-[3rem]">{t.description || "Equipe publique prete pour la beta, le recrutement ou l'inscription tournoi."}</p>
             <div className="grid grid-cols-4 gap-2 mt-4 pt-4 border-t border-white/5 text-center">
               <div><div className="font-display text-orange-500">{t.elo}</div><div className="text-[10px] text-white/40 uppercase">ELO</div></div>
               <div><div className="font-display">{t.level}</div><div className="text-[10px] text-white/40 uppercase">LVL</div></div>
               <div><div className="font-display text-green-400">{t.wins}</div><div className="text-[10px] text-white/40 uppercase">W</div></div>
               <div><div className="font-display text-yellow-neon">{t.trophies}</div><div className="text-[10px] text-white/40 uppercase">🏆</div></div>
             </div>
+            <div className="mt-4 text-xs text-white/40 space-y-1">
+              <div>Capitaine: <span className="text-white/70">{t.captain_pseudo || "N/A"}</span></div>
+              <div>Membres: <span className="text-white/70">{t.members_count}/{t.members_limit}</span></div>
+              <div>Recrutement: <span className="text-white/70">{t.recruitment_status === "open" ? "ouvert" : "ferme"}</span></div>
+            </div>
+            {token && !user?.team_id && t.recruitment_status === "open" && (
+              <div className="mt-4">
+                {applyTarget === t.id ? (
+                  <div className="space-y-3">
+                    <input value={applyForm.role} onChange={(e)=>setApplyForm({...applyForm, role: e.target.value})} placeholder="Role vise" maxLength={32} />
+                    <textarea rows={3} value={applyForm.message} onChange={(e)=>setApplyForm({...applyForm, message: e.target.value})} placeholder="Message au capitaine (optionnel)" maxLength={500} />
+                    <div className="flex gap-2">
+                      <button disabled={busy} onClick={() => submitApplication(t.id)} className="btn-neon text-xs">Envoyer</button>
+                      <button disabled={busy} onClick={() => setApplyTarget(null)} className="btn-ghost text-xs">Annuler</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button onClick={() => setApplyTarget(t.id)} className="btn-ghost text-xs w-full">
+                    <Plus size={14}/>Candidater a cette equipe
+                  </button>
+                )}
+              </div>
+            )}
           </div>))}
       </div>
     </div>
