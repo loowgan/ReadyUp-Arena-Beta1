@@ -92,11 +92,27 @@ class LoginReq(BaseModel):
     email: EmailStr
     password: str
 
+
+class ProfileUpdateReq(BaseModel):
+    pseudo: Optional[str] = Field(default=None, min_length=3, max_length=24)
+    email: Optional[EmailStr] = None
+    gender: Optional[str] = Field(default=None, max_length=32)
+    age: Optional[int] = Field(default=None, ge=13, le=99)
+    bio: Optional[str] = Field(default=None, max_length=280)
+    custom_avatar_url: Optional[str] = Field(default=None, max_length=600)
+
+
 class UserPublic(BaseModel):
     id: str
     pseudo: str
     email: str
     country: str
+    gender: Optional[str] = None
+    age: Optional[int] = None
+    bio: Optional[str] = None
+    avatar_url: Optional[str] = None
+    custom_avatar_url: Optional[str] = None
+    steam_avatar_url: Optional[str] = None
     level: int
     xp: int
     elo: int
@@ -180,9 +196,14 @@ def _stats_sources(doc: dict) -> dict:
 
 def _public_stats_payload(doc: dict) -> dict:
     platform_elo = int(doc.get("platform_elo", doc.get("elo", 1000)))
+    custom_avatar_url = doc.get("custom_avatar_url")
+    steam_avatar_url = doc.get("steam_avatar_url")
     return {
         "elo": platform_elo,
         "platform_elo": platform_elo,
+        "avatar_url": custom_avatar_url or steam_avatar_url,
+        "custom_avatar_url": custom_avatar_url,
+        "steam_avatar_url": steam_avatar_url,
         "faceit_elo": doc.get("faceit_elo"),
         "premier_rating": doc.get("premier_rating"),
         "kills_30d": doc.get("kills_30d"),
@@ -216,6 +237,7 @@ def _public_stats_payload(doc: dict) -> dict:
 def user_to_public(u: dict) -> dict:
     return {"id": u["id"], "pseudo": u["pseudo"], "email": u["email"],
             "country": u.get("country","FR"), "level": u.get("level",1),
+            "gender": u.get("gender"), "age": u.get("age"), "bio": u.get("bio"),
             "xp": u.get("xp",0), **_public_stats_payload(u),
             "steam_verified": u.get("steam_verified", False),
             "created_at": u["created_at"],
@@ -241,6 +263,8 @@ async def register(req: RegisterReq, request: Request):
     user = {
         "id": str(uuid.uuid4()), "pseudo": req.pseudo, "email": req.email.lower(),
         "password_hash": hash_password(req.password), "country": req.country,
+        "gender": None, "age": None, "bio": None,
+        "custom_avatar_url": None, "steam_avatar_url": None,
         "level": 1, "xp": 0, "elo": 1000, "platform_elo": 1000,
         "faceit_elo": None, "premier_rating": None,
         "kills_30d": None, "deaths_30d": None, "kdr": None,
@@ -282,6 +306,44 @@ async def login(req: LoginReq, request: Request):
 @api_router.get("/auth/me", response_model=UserPublic)
 async def me(user=Depends(get_current_user)):
     return user_to_public(user)
+
+
+@api_router.patch("/profile/me", response_model=UserPublic)
+async def update_my_profile(req: ProfileUpdateReq, user=Depends(get_current_user)):
+    updates = {}
+    provided_fields = req.model_fields_set
+
+    if "pseudo" in provided_fields and req.pseudo is not None and req.pseudo != user.get("pseudo"):
+        existing = await db.users.find_one({"pseudo": req.pseudo, "id": {"$ne": user["id"]}}, {"_id": 0, "id": 1})
+        if existing:
+            raise HTTPException(409, "Pseudo déjà utilisé")
+        updates["pseudo"] = req.pseudo
+
+    if "email" in provided_fields and req.email is not None:
+        email = req.email.lower()
+        if email != user.get("email"):
+            existing = await db.users.find_one({"email": email, "id": {"$ne": user["id"]}}, {"_id": 0, "id": 1})
+            if existing:
+                raise HTTPException(409, "Email déjà utilisé")
+            updates["email"] = email
+
+    if "gender" in provided_fields:
+        updates["gender"] = req.gender.strip() if req.gender else None
+    if "age" in provided_fields:
+        updates["age"] = req.age
+    if "bio" in provided_fields:
+        updates["bio"] = req.bio.strip() if req.bio else None
+    if "custom_avatar_url" in provided_fields:
+        updates["custom_avatar_url"] = req.custom_avatar_url.strip() if req.custom_avatar_url else None
+
+    if not updates:
+        return user_to_public(user)
+
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": user["id"]}, {"$set": updates})
+    updated_user = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
+    await journal("profile_updated", user["id"], {"fields": sorted(updates.keys())})
+    return user_to_public(updated_user)
 
 
 EXTERNAL_STATS_HEADERS = {
@@ -390,6 +452,9 @@ def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
     steam_name = str(steam_data.get("name") or "").strip()
     if steam_name:
         updates["_steam_display_name"] = steam_name[:24]
+    steam_avatar_hash = str(steam_data.get("avatar") or "").strip()
+    if steam_avatar_hash:
+        updates["steam_avatar_url"] = f"https://avatars.steamstatic.com/{steam_avatar_hash}_full.jpg"
     if steam_data.get("profileurl"):
         updates["steam_profile_url"] = steam_data.get("profileurl")
 
@@ -475,7 +540,7 @@ async def sync_my_stats(user=Depends(get_current_user)):
         raise HTTPException(502, "Impossible de synchroniser les stats externes pour le moment.")
 
     steam_display_name = updates.pop("_steam_display_name", None)
-    if steam_display_name:
+    if steam_display_name and str(user.get("pseudo") or "").startswith("Steam_"):
         taken = await db.users.find_one(
             {"pseudo": steam_display_name, "id": {"$ne": user["id"]}},
             {"_id": 0, "id": 1},
@@ -1371,6 +1436,8 @@ async def steam_callback(request: Request):
             "id": str(uuid.uuid4()), "pseudo": f"Steam_{steam_id[-6:]}",
             "email": f"steam_{steam_id}@readyup.local",
             "password_hash": hash_password(uuid.uuid4().hex), "country": "??",
+            "gender": None, "age": None, "bio": None,
+            "custom_avatar_url": None, "steam_avatar_url": None,
             "level": 1, "xp": 0, "elo": 1000, "platform_elo": 1000,
             "faceit_elo": None, "premier_rating": None,
             "kills_30d": None, "deaths_30d": None, "kdr": None,
@@ -1818,6 +1885,11 @@ async def _seed_admin_user():
         "email": admin_email,
         "password_hash": hash_password(admin_password),
         "country": env_text("SEED_ADMIN_COUNTRY", "FR"),
+        "gender": None,
+        "age": None,
+        "bio": None,
+        "custom_avatar_url": None,
+        "steam_avatar_url": None,
         "level": 1,
         "xp": 0,
         "elo": 1000,
@@ -1840,6 +1912,9 @@ async def _backfill_user_stats():
             updates["reliability"] = 50
         if "stats_last_sync_at" not in user:
             updates["stats_last_sync_at"] = None
+        for field in ("gender", "age", "bio", "custom_avatar_url", "steam_avatar_url"):
+            if field not in user:
+                updates[field] = None
         computed_kdr = _compute_kdr(user)
         if computed_kdr is not None and user.get("kdr") != computed_kdr:
             updates["kdr"] = computed_kdr

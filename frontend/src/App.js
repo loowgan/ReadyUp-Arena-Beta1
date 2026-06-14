@@ -975,6 +975,17 @@ const Profile = () => {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
   const [syncError, setSyncError] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileMessage, setProfileMessage] = useState("");
+  const [profileError, setProfileError] = useState("");
+  const [profileForm, setProfileForm] = useState({
+    pseudo: "",
+    email: "",
+    gender: "",
+    age: "",
+    bio: "",
+    custom_avatar_url: "",
+  });
   const demoProfile = {
     pseudo: "Vortex",
     country: "FR",
@@ -990,6 +1001,12 @@ const Profile = () => {
     kdr: 1.42,
     rank_cs2: "Global Elite",
     role: "AWP",
+    gender: "",
+    age: null,
+    bio: "Capitaine AWP, disponible pour les cups du soir.",
+    avatar_url: null,
+    custom_avatar_url: null,
+    steam_avatar_url: null,
     steam_verified: true,
     reliability: 97,
     stats_last_sync_at: new Date().toISOString(),
@@ -1032,6 +1049,12 @@ const Profile = () => {
     kdr: null,
     rank_cs2: "Non renseigné",
     role: "Polyvalent",
+    gender: "",
+    age: null,
+    bio: "",
+    avatar_url: null,
+    custom_avatar_url: null,
+    steam_avatar_url: null,
     steam_verified: false,
     reliability: 50,
     stats_last_sync_at: null,
@@ -1058,7 +1081,45 @@ const Profile = () => {
     ? { ...emptyProfile, ...currentUser, xp_next: Math.max((currentUser.xp || 0) + 500, 1000) }
     : demoProfile;
   const xpPct = (p.xp / p.xp_next) * 100;
+  useEffect(() => {
+    if (!currentUser) return;
+    setProfileForm({
+      pseudo: currentUser.pseudo || "",
+      email: currentUser.email || "",
+      gender: currentUser.gender || "",
+      age: currentUser.age || "",
+      bio: currentUser.bio || "",
+      custom_avatar_url: currentUser.custom_avatar_url || "",
+    });
+  }, [currentUser]);
   const handleSteamLink = () => { window.location.href = `${API}/auth/steam/login`; };
+  const saveProfile = async (event) => {
+    event.preventDefault();
+    if (!token) {
+      setProfileError("Connectez-vous avant de modifier le profil.");
+      return;
+    }
+    setSavingProfile(true);
+    setProfileMessage("");
+    setProfileError("");
+    try {
+      const payload = {
+        pseudo: profileForm.pseudo.trim(),
+        email: profileForm.email.trim(),
+        gender: profileForm.gender.trim() || null,
+        age: profileForm.age === "" ? null : Number(profileForm.age),
+        bio: profileForm.bio.trim() || null,
+        custom_avatar_url: profileForm.custom_avatar_url.trim() || null,
+      };
+      const response = await axios.patch(`${API}/profile/me`, payload, { headers: { Authorization: `Bearer ${token}` } });
+      setUser(response.data);
+      setProfileMessage("Profil mis a jour.");
+    } catch (err) {
+      setProfileError(err?.response?.data?.detail || "Modification impossible pour le moment.");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
   const syncStats = async () => {
     if (!token) {
       setSyncError("Connectez-vous avant de lancer la synchro.");
@@ -1114,7 +1175,13 @@ const Profile = () => {
         <div className="absolute top-0 right-0 w-96 h-96 bg-orange-500/10 blur-3xl"/>
         <div className="flex items-center gap-6 relative">
           <div className="relative">
-            <div className="w-28 h-28 bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center font-display text-5xl font-bold">{(p.pseudo || "P").slice(0,1).toUpperCase()}</div>
+            <div className="w-28 h-28 bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center font-display text-5xl font-bold overflow-hidden">
+              {p.avatar_url ? (
+                <img src={p.avatar_url} alt={p.pseudo} className="w-full h-full object-cover"/>
+              ) : (
+                (p.pseudo || "P").slice(0,1).toUpperCase()
+              )}
+            </div>
             <div className="absolute -bottom-2 -right-2 bg-black border border-orange-500 px-2 py-0.5 text-xs font-display">LVL {p.level}</div>
           </div>
           <div className="flex-1">
@@ -1124,6 +1191,7 @@ const Profile = () => {
               <span className="text-white/50 text-sm">{p.country}</span>
             </div>
             <p className="text-white/50 mt-1">{p.role} • Rang CS2: {p.rank_cs2 || "Non renseigné"}</p>
+            {p.bio && <p className="text-white/60 text-sm mt-2 max-w-2xl">{p.bio}</p>}
             <div className="mt-4 flex flex-wrap gap-3">
               {currentUser && (
                 p.steam_verified ? (
@@ -1155,6 +1223,52 @@ const Profile = () => {
           </div>
         </div>
       </div>
+
+      {currentUser && (
+        <>
+          <SectionTitle sub="Profil" title="Modifier mes informations"/>
+          <form onSubmit={saveProfile} className="glass p-6 grid lg:grid-cols-[1fr_1fr] gap-4" data-testid="profile-edit-form">
+            <div>
+              <label className="text-xs uppercase tracking-widest text-white/40">Pseudo</label>
+              <input value={profileForm.pseudo} onChange={(e)=>setProfileForm({...profileForm, pseudo: e.target.value})} minLength={3} maxLength={24} required/>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-widest text-white/40">Email</label>
+              <input type="email" value={profileForm.email} onChange={(e)=>setProfileForm({...profileForm, email: e.target.value})} required/>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-widest text-white/40">Genre</label>
+              <select value={profileForm.gender} onChange={(e)=>setProfileForm({...profileForm, gender: e.target.value})}>
+                <option value="">Non renseigne</option>
+                <option value="femme">Femme</option>
+                <option value="homme">Homme</option>
+                <option value="non-binaire">Non-binaire</option>
+                <option value="autre">Autre</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-widest text-white/40">Age</label>
+              <input type="number" min="13" max="99" value={profileForm.age} onChange={(e)=>setProfileForm({...profileForm, age: e.target.value})}/>
+            </div>
+            <div className="lg:col-span-2">
+              <label className="text-xs uppercase tracking-widest text-white/40">Logo / avatar perso URL</label>
+              <input value={profileForm.custom_avatar_url} onChange={(e)=>setProfileForm({...profileForm, custom_avatar_url: e.target.value})} placeholder="https://..."/>
+              <div className="text-xs text-white/35 mt-1">Vide = avatar Steam synchronise si disponible.</div>
+            </div>
+            <div className="lg:col-span-2">
+              <label className="text-xs uppercase tracking-widest text-white/40">Petite description</label>
+              <textarea rows={4} maxLength={280} value={profileForm.bio} onChange={(e)=>setProfileForm({...profileForm, bio: e.target.value})} placeholder="Role, disponibilites, style de jeu..."/>
+            </div>
+            <div className="lg:col-span-2 flex items-center gap-3 flex-wrap">
+              <button className="btn-neon" disabled={savingProfile} type="submit">
+                <User size={14}/>{savingProfile ? "Sauvegarde..." : "Sauvegarder"}
+              </button>
+              {profileMessage && <span className="text-sm text-cyan-neon">{profileMessage}</span>}
+              {profileError && <span className="text-sm text-red-400">{profileError}</span>}
+            </div>
+          </form>
+        </>
+      )}
 
       <SectionTitle sub="Statistiques" title="Classement & sources"/>
       <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
