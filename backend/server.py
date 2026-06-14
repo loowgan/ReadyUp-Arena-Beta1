@@ -119,6 +119,7 @@ class UserPublic(BaseModel):
     platform_elo: int
     faceit_elo: Optional[int] = None
     premier_rating: Optional[int] = None
+    premier_status: Optional[str] = None
     kills_30d: Optional[int] = None
     deaths_30d: Optional[int] = None
     kdr: Optional[float] = None
@@ -189,7 +190,7 @@ def _stats_sources(doc: dict) -> dict:
     return {
         "platform": "ReadyUp Arena",
         "faceit": (provider or "FACEIT") if doc.get("faceit_elo") is not None else None,
-        "premier": (provider or "Valve Premier") if doc.get("premier_rating") is not None else None,
+        "premier": (provider or "Valve Premier") if doc.get("premier_rating") is not None or doc.get("premier_status") else None,
         "kdr": (provider or "CS gameplay sample") if _compute_kdr(doc) is not None else None,
     }
 
@@ -206,6 +207,7 @@ def _public_stats_payload(doc: dict) -> dict:
         "steam_avatar_url": steam_avatar_url,
         "faceit_elo": doc.get("faceit_elo"),
         "premier_rating": doc.get("premier_rating"),
+        "premier_status": doc.get("premier_status"),
         "kills_30d": doc.get("kills_30d"),
         "deaths_30d": doc.get("deaths_30d"),
         "kdr": _compute_kdr(doc),
@@ -266,7 +268,7 @@ async def register(req: RegisterReq, request: Request):
         "gender": None, "age": None, "bio": None,
         "custom_avatar_url": None, "steam_avatar_url": None,
         "level": 1, "xp": 0, "elo": 1000, "platform_elo": 1000,
-        "faceit_elo": None, "premier_rating": None,
+        "faceit_elo": None, "premier_rating": None, "premier_status": None,
         "kills_30d": None, "deaths_30d": None, "kdr": None,
         "rank_cs2": None, "role": "Polyvalent", "reliability": 50,
         "stats_last_sync_at": None,
@@ -357,6 +359,7 @@ EXTERNAL_STATS_HEADERS = {
 SYNC_MANAGED_FIELDS = (
     "faceit_elo",
     "premier_rating",
+    "premier_status",
     "kills_30d",
     "deaths_30d",
     "kdr",
@@ -441,6 +444,26 @@ def _extract_cswat_object(raw_html: str, needle: str) -> Optional[dict]:
     return None
 
 
+def _extract_cswat_premier_tile(raw_html: str) -> tuple[Optional[int], Optional[str]]:
+    section_match = re.search(
+        r"Stats Skill Rating(?P<section>.*?)(?:Member Since|Est\. Playtime|Last 2 Weeks|Leetify|Scope\.gg)",
+        raw_html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not section_match:
+        return None, None
+
+    section = html.unescape(section_match.group("section"))
+    if re.search(r'alt="Unrated"', section, re.IGNORECASE) or re.search(r">\s*---\s*<", section):
+        return None, "unrated"
+
+    rating_match = re.search(r'alt="Rating\s+([\d,]+)"', section, re.IGNORECASE)
+    if not rating_match:
+        return None, None
+
+    return _coerce_int(rating_match.group(1)), "rated"
+
+
 def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
     updates = _managed_stats_defaults()
     updates["stats_provider"] = "CSWAT"
@@ -483,6 +506,7 @@ def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
     leetify_data = (leetify_wrapper or {}).get("leetifyProfile") or {}
     leetify_ratings = (leetify_data.get("rating") or {})
     leetify_ranks = (leetify_data.get("ranks") or {})
+    premier_tile_rating, premier_tile_status = _extract_cswat_premier_tile(raw_html)
     if leetify_data.get("success") and not leetify_data.get("error"):
         if updates.get("kdr") is None:
             updates["kdr"] = _coerce_float(leetify_data.get("kill_death_ratio"))
@@ -495,6 +519,13 @@ def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
             "clutching_rating": _coerce_float(leetify_ratings.get("clutch")),
         })
 
+    if updates.get("premier_rating") is None and premier_tile_rating is not None and premier_tile_status != "unrated":
+        updates["premier_rating"] = premier_tile_rating
+    if updates.get("premier_rating") is not None:
+        updates["premier_status"] = "rated"
+    elif premier_tile_status:
+        updates["premier_status"] = premier_tile_status
+
     has_any_stats = any(
         updates.get(field) is not None
         for field in (
@@ -502,6 +533,7 @@ def _parse_cswat_stats(raw_html: str, steam_id: str) -> dict:
             "faceit_level",
             "kdr",
             "premier_rating",
+            "premier_status",
             "aim_rating",
             "utility_rating",
             "positioning_rating",
@@ -1439,7 +1471,7 @@ async def steam_callback(request: Request):
             "gender": None, "age": None, "bio": None,
             "custom_avatar_url": None, "steam_avatar_url": None,
             "level": 1, "xp": 0, "elo": 1000, "platform_elo": 1000,
-            "faceit_elo": None, "premier_rating": None,
+            "faceit_elo": None, "premier_rating": None, "premier_status": None,
             "kills_30d": None, "deaths_30d": None, "kdr": None,
             "rank_cs2": None, "role": "Polyvalent", "reliability": 55,
             "stats_last_sync_at": None,
@@ -1893,6 +1925,10 @@ async def _seed_admin_user():
         "level": 1,
         "xp": 0,
         "elo": 1000,
+        "platform_elo": 1000,
+        "faceit_elo": None,
+        "premier_rating": None,
+        "premier_status": None,
         "steam_verified": False,
         "steam_id": None,
         "tokens": int(env_text("SEED_ADMIN_TOKENS", "1000")),
@@ -1912,6 +1948,8 @@ async def _backfill_user_stats():
             updates["reliability"] = 50
         if "stats_last_sync_at" not in user:
             updates["stats_last_sync_at"] = None
+        if "premier_status" not in user:
+            updates["premier_status"] = None
         for field in ("gender", "age", "bio", "custom_avatar_url", "steam_avatar_url"):
             if field not in user:
                 updates[field] = None

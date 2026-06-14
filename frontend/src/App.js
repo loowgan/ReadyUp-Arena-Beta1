@@ -996,6 +996,7 @@ const Profile = () => {
     platform_elo: 2240,
     faceit_elo: 2430,
     premier_rating: 27420,
+    premier_status: "rated",
     kills_30d: 412,
     deaths_30d: 290,
     kdr: 1.42,
@@ -1044,6 +1045,7 @@ const Profile = () => {
     platform_elo: 1000,
     faceit_elo: null,
     premier_rating: null,
+    premier_status: null,
     kills_30d: null,
     deaths_30d: null,
     kdr: null,
@@ -1144,7 +1146,13 @@ const Profile = () => {
   };
   const statCards = [
     { label: "ELO plateforme", value: formatMetric(p.platform_elo ?? p.elo), src: p.stats_sources?.platform || "ReadyUp Arena", state: "synced", color: "text-orange-500" },
-    { label: "Premier Rating", value: formatMetric(p.premier_rating), src: p.stats_sources?.premier || "Valve Premier", state: hasMetricValue(p.premier_rating) ? "synced" : "indisponible", color: "text-red-500" },
+    {
+      label: "Premier Rating",
+      value: hasMetricValue(p.premier_rating) ? formatMetric(p.premier_rating) : p.premier_status === "unrated" ? "Non classe" : formatMetric(p.premier_rating),
+      src: p.stats_sources?.premier || "Valve Premier",
+      state: hasMetricValue(p.premier_rating) ? "synced" : p.premier_status === "unrated" ? "non classe" : "indisponible",
+      color: "text-red-500",
+    },
     { label: "FACEIT ELO", value: formatMetric(p.faceit_elo), src: p.stats_sources?.faceit || "FACEIT", state: hasMetricValue(p.faceit_elo) ? "synced" : "non lié", color: "text-cyan-neon" },
     { label: "K/D sync", value: formatMetric(p.kdr, 2), src: p.stats_sources?.kdr || "Historique de match", state: hasMetricValue(p.kdr) ? "synced" : "indisponible", color: "text-yellow-neon" },
   ];
