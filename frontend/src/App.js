@@ -2821,7 +2821,7 @@ const Cs2Hub = () => {
 };
 
 /* ============== DUELS 1v1 ============== */
-const Duels = () => {
+const DuelsLegacy = () => {
   const { user, token } = useAuth();
   const [balance, setBalance] = useState(null);
   const [duels, setDuels] = useState([]);
@@ -2898,6 +2898,234 @@ const Duels = () => {
             <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
               <div><div className="text-xs uppercase text-white/40">Mise</div><div className="font-display text-yellow-neon">⚡ {d.stake}</div></div>
               {user && user.id !== d.creator_id && <button onClick={()=>accept(d.id)} className="btn-neon" data-testid={`accept-duel-${d.id}`}>Accepter</button>}
+              {user && user.id === d.creator_id && <span className="text-xs text-white/40">Votre défi</span>}
+            </div>
+          </div>))}
+      </div>
+    </div>
+  );
+};
+
+const Duels = () => {
+  const { user, token } = useAuth();
+  const [balance, setBalance] = useState(null);
+  const [duels, setDuels] = useState([]);
+  const [myDuels, setMyDuels] = useState([]);
+  const [form, setForm] = useState({ map: "Mirage", stake: 100 });
+  const [busy, setBusy] = useState(false);
+  const [busyKey, setBusyKey] = useState("");
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+
+  const duelStatus = (status) => ({
+    open: { label: "Ouvert", variant: "soon" },
+    veto: { label: "Veto maps", variant: "soon" },
+    launch_pending: { label: "Lancement", variant: "soon" },
+    ready: { label: "Serveur pret", variant: "verified" },
+    live: { label: "Match live", variant: "live" },
+    in_progress: { label: "En cours", variant: "live" },
+    closed: { label: "Termine", variant: "verified" },
+    launch_failed: { label: "Echec launch", variant: "offline" },
+  }[status] || { label: status || "inconnu", variant: "offline" });
+
+  const refresh = useCallback(async () => {
+    const jobs = [axios.get(`${API}/duels`)];
+    if (token) {
+      const headers = { Authorization: `Bearer ${token}` };
+      jobs.push(axios.get(`${API}/duels/balance`, { headers }));
+      jobs.push(axios.get(`${API}/duels/mine`, { headers }));
+    }
+    const [openRes, balanceRes, mineRes] = await Promise.all(jobs);
+    setDuels(openRes.data || []);
+    setBalance(balanceRes?.data?.tokens ?? null);
+    setMyDuels(mineRes?.data || []);
+  }, [token]);
+
+  useEffect(() => {
+    refresh().catch(() => {});
+    const id = setInterval(() => { refresh().catch(() => {}); }, 5000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const create = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await axios.post(`${API}/duels/create`, { map: form.map, stake: parseInt(form.stake, 10) }, { headers: authH });
+      await refresh();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erreur");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const accept = async (id) => {
+    setBusyKey(`accept-${id}`);
+    try {
+      await axios.post(`${API}/duels/${id}/accept-cs2`, {}, { headers: authH });
+      await refresh();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erreur");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const banMap = async (duelId, map) => {
+    setBusyKey(`ban-${duelId}-${map}`);
+    try {
+      await axios.post(`${API}/duels/${duelId}/ban`, { map }, { headers: authH });
+      await refresh();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erreur");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const joinMatch = async (duelId) => {
+    setBusyKey(`join-${duelId}`);
+    try {
+      const response = await axios.post(`${API}/duels/${duelId}/join`, {}, { headers: authH });
+      if (response.data?.join_url) {
+        window.location.href = response.data.join_url;
+      }
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erreur");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="duels-page">
+      <div className="flex items-center gap-3"><Coins className="text-yellow-neon" size={32}/><h1 className="font-display text-5xl uppercase">Duels 1v1</h1></div>
+      <p className="text-white/50 mt-2">Mise en jetons virtuels non achetables, sans valeur reelle. Flux CS2 : acceptation, veto de maps, lancement MatchZy puis bouton de connexion.</p>
+      {user ? (
+        <div className="glass p-6 mt-6 flex items-center justify-between gap-4 flex-wrap">
+          <div><div className="text-xs uppercase tracking-widest text-white/40">Votre solde</div>
+            <div className="font-display text-4xl text-yellow-neon mt-1" data-testid="duel-balance">⚡ {balance ?? "—"}</div></div>
+          <form onSubmit={create} className="flex items-end gap-2 flex-wrap">
+            <div><label className="text-xs uppercase text-white/40">Map favorite</label>
+              <select value={form.map} onChange={e=>setForm({...form,map:e.target.value})} data-testid="duel-map-select">
+                {["Mirage","Inferno","Anubis","Nuke","Vertigo","Ancient","Dust2"].map(m=><option key={m}>{m}</option>)}
+              </select></div>
+            <div><label className="text-xs uppercase text-white/40">Mise (10-5000)</label>
+              <input type="number" min={10} max={5000} value={form.stake} onChange={e=>setForm({...form,stake:e.target.value})} className="w-28" data-testid="duel-stake-input"/></div>
+            <button disabled={busy} className="btn-neon" data-testid="duel-create-btn"><Swords size={14}/>Créer un défi</button>
+          </form>
+        </div>
+      ) : (
+        <div className="glass p-6 mt-6 text-center"><p className="text-white/60">Connectez-vous pour créer ou accepter des duels.</p>
+          <Link to="/login" className="btn-neon mt-3" data-testid="duel-login-cta">Se connecter</Link></div>
+      )}
+
+      {user && (
+        <>
+          <SectionTitle sub="Vos matchs" title="Mes duels actifs"/>
+          <div className="grid lg:grid-cols-2 gap-4">
+            {myDuels.length === 0 && <div className="glass p-6 text-white/40">Aucun duel en cours sur votre compte.</div>}
+            {myDuels.map((duel) => {
+              const meta = duelStatus(duel.status);
+              return (
+                <div key={duel.id} className="glass p-6 border border-white/8" data-testid={`my-duel-${duel.id}`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="font-display text-2xl">{duel.creator_pseudo} <span className="text-white/35">vs</span> {duel.opponent_pseudo || "En attente"}</div>
+                      <div className="text-sm text-white/55 mt-2">Map favorite : <span className="text-white">{duel.preferred_map || "—"}</span></div>
+                    </div>
+                    <Badge variant={meta.variant}>{meta.label}</Badge>
+                  </div>
+
+                  <div className="grid sm:grid-cols-3 gap-3 mt-5">
+                    <div className="border border-white/8 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Pot</div>
+                      <div className="font-display text-2xl text-yellow-neon mt-2">⚡ {duel.pot}</div>
+                    </div>
+                    <div className="border border-white/8 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Map finale</div>
+                      <div className="font-display text-2xl mt-2">{duel.selected_map || "En veto"}</div>
+                    </div>
+                    <div className="border border-white/8 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Serveur</div>
+                      <div className="text-sm mt-2 text-white/75">{duel.server?.name || duel.launch_status || "En attente"}</div>
+                    </div>
+                  </div>
+
+                  {duel.status === "veto" && (
+                    <div className="mt-5 border border-white/8 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Phase veto</div>
+                          <div className="text-sm text-white/70 mt-2">
+                            {duel.is_my_turn ? "C'est votre tour : bannissez une map." : `Tour de ${duel.veto_turn_pseudo || "l'autre joueur"}.`}
+                          </div>
+                        </div>
+                        <div className="text-xs text-white/45">Auto refresh 5s</div>
+                      </div>
+                      <div className="flex flex-wrap gap-2 mt-4">
+                        {(duel.remaining_maps || []).map((map) => (
+                          <button
+                            key={map}
+                            disabled={!duel.is_my_turn || busyKey === `ban-${duel.id}-${map}`}
+                            onClick={() => banMap(duel.id, map)}
+                            className={`px-4 py-2 border text-sm ${duel.is_my_turn ? "border-orange-500/50 hover:border-orange-500 hover:text-white" : "border-white/8 text-white/40 cursor-not-allowed"}`}
+                          >
+                            {map}
+                          </button>
+                        ))}
+                      </div>
+                      {(duel.veto_history || []).length > 0 && (
+                        <div className="mt-4 text-xs text-white/50">
+                          {(duel.veto_history || []).map((entry) => `${entry.by_pseudo} a retire ${entry.map}`).join(" • ")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {duel.launch_error && (
+                    <div className="mt-4 text-sm text-red-400 border border-red-500/25 p-3">{duel.launch_error}</div>
+                  )}
+
+                  {duel.can_join && (
+                    <div className="mt-5 flex flex-wrap items-center gap-3">
+                      <button
+                        onClick={() => joinMatch(duel.id)}
+                        disabled={busyKey === `join-${duel.id}`}
+                        className="btn-neon"
+                        data-testid={`join-duel-${duel.id}`}
+                      >
+                        <Play size={14}/>{busyKey === `join-${duel.id}` ? "Connexion..." : (duel.join_cta || "Rejoindre le serveur")}
+                      </button>
+                      <div className="text-sm text-white/50">
+                        {duel.server?.host && duel.server?.game_port ? `${duel.server.host}:${duel.server.game_port}` : "Serveur reserve"}
+                      </div>
+                    </div>
+                  )}
+
+                  {duel.status === "closed" && (
+                    <div className="mt-5 text-sm text-green-300">Victoire : {duel.winner_pseudo || "resultat confirme"}.</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      <SectionTitle sub="Défis ouverts" title="Tous les duels en attente"/>
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {duels.length === 0 && <div className="glass p-6 text-white/40">Aucun duel ouvert pour le moment.</div>}
+        {duels.map(d => (
+          <div key={d.id} className="glass glass-hover p-5" data-testid={`duel-${d.id}`}>
+            <div className="flex items-center justify-between">
+              <div className="font-display text-xl">{d.creator_pseudo}</div>
+              <Badge variant="soon">OUVERT</Badge>
+            </div>
+            <div className="mt-3 text-sm text-white/60">Map favorite : <span className="text-white">{d.preferred_map || d.selected_map || "—"}</span></div>
+            <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
+              <div><div className="text-xs uppercase text-white/40">Mise</div><div className="font-display text-yellow-neon">⚡ {d.stake}</div></div>
+              {user && user.id !== d.creator_id && <button onClick={()=>accept(d.id)} disabled={busyKey === `accept-${d.id}`} className="btn-neon" data-testid={`accept-duel-${d.id}`}>{busyKey === `accept-${d.id}` ? "..." : "Accepter + veto"}</button>}
               {user && user.id === d.creator_id && <span className="text-xs text-white/40">Votre défi</span>}
             </div>
           </div>))}
@@ -3148,6 +3376,7 @@ const Cs2Panel = () => {
   const emptyServerForm = {
     name: "", host: "", port: 27015, control_mode: "bridge", rcon_password: "", bridge_token: "",
     provider: "FShost.me", region: "EU-FR", public_host: "", game_port: 27015, gotv_port: "",
+    join_password: "", gotv_password: "",
     matchzy_enabled: true, cssimpleadmin_enabled: true, fake_rcon_enabled: true, hltv_enabled: true,
   };
   const [servers, setServers] = useState([]);
@@ -3172,6 +3401,8 @@ const Cs2Panel = () => {
         port: parseInt(form.port, 10),
         game_port: form.game_port ? parseInt(form.game_port, 10) : undefined,
         gotv_port: form.gotv_port ? parseInt(form.gotv_port, 10) : undefined,
+        join_password: form.join_password || undefined,
+        gotv_password: form.gotv_password || undefined,
       };
       if (form.control_mode === "bridge") {
         payload.rcon_password = undefined;
@@ -3236,6 +3467,10 @@ const Cs2Panel = () => {
             <input type="number" value={form.game_port} onChange={e=>setForm({...form,game_port:e.target.value})} placeholder="27015"/></div>
           <div><label className="text-xs uppercase tracking-widest text-white/40">Port HLTV / GOTV</label>
             <input type="number" value={form.gotv_port} onChange={e=>setForm({...form,gotv_port:e.target.value})} placeholder="27020"/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Mot de passe joueur</label>
+            <input type="password" value={form.join_password} onChange={e=>setForm({...form,join_password:e.target.value})} placeholder="pracc"/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Mot de passe HLTV</label>
+            <input type="password" value={form.gotv_password} onChange={e=>setForm({...form,gotv_password:e.target.value})} placeholder="club21"/></div>
           {form.control_mode === "bridge" ? (
             <div><label className="text-xs uppercase tracking-widest text-white/40">Bridge token</label>
               <input type="password" value={form.bridge_token} onChange={e=>setForm({...form,bridge_token:e.target.value})} required data-testid="cs2-bridge-token-input"/></div>

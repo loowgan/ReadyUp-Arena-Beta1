@@ -52,6 +52,14 @@ def _optional_steam_connect(host: Optional[str], port: Optional[int]) -> Optiona
     return f"steam://connect/{host}:{int(port)}"
 
 
+def _private_steam_connect(host: Optional[str], port: Optional[int], password: Optional[str] = None) -> Optional[str]:
+    if not host or not port:
+        return None
+    connect = f"steam://connect/{host}:{int(port)}"
+    secret = (password or "").strip()
+    return f"{connect}/{secret}" if secret else connect
+
+
 def _backend_public_base() -> str:
     return (os.environ.get("BACKEND_PUBLIC_URL") or "").strip().rstrip("/")
 
@@ -94,7 +102,10 @@ def _matchzy_set_cvar_command(name: str, value: str) -> str:
 
 def _public_server(doc: dict) -> dict:
     """Strip the RCON password before returning a server to clients."""
-    clean = {k: v for k, v in doc.items() if k not in ("_id", "rcon_password", "bridge_token_hash")}
+    clean = {
+        k: v for k, v in doc.items()
+        if k not in ("_id", "rcon_password", "bridge_token_hash", "join_password", "gotv_password")
+    }
     public_host = clean.get("public_host") or clean.get("host")
     game_port = clean.get("game_port") or clean.get("port")
     gotv_port = clean.get("gotv_port")
@@ -130,6 +141,8 @@ class ServerReq(BaseModel):
     public_host: Optional[str] = Field(default=None, max_length=128)
     game_port: Optional[int] = Field(default=None, ge=1, le=65535)
     gotv_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    join_password: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    gotv_password: Optional[str] = Field(default=None, min_length=1, max_length=128)
     panel_url: Optional[str] = Field(default=None, max_length=512)
     matchzy_enabled: bool = True
     cssimpleadmin_enabled: bool = False
@@ -150,6 +163,8 @@ class ServerPatchReq(BaseModel):
     public_host: Optional[str] = Field(default=None, max_length=128)
     game_port: Optional[int] = Field(default=None, ge=1, le=65535)
     gotv_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    join_password: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    gotv_password: Optional[str] = Field(default=None, min_length=1, max_length=128)
     panel_url: Optional[str] = Field(default=None, max_length=512)
     matchzy_enabled: Optional[bool] = None
     cssimpleadmin_enabled: Optional[bool] = None
@@ -193,6 +208,159 @@ class BridgeHeartbeatReq(BaseModel):
 class BridgeCommandResultReq(BaseModel):
     status: str = Field(pattern="^(completed|failed)$")
     output: Optional[str] = Field(default=None, max_length=4000)
+
+
+async def queue_bridge_command(
+    db,
+    srv: dict,
+    command: str,
+    *,
+    kind: str = "console_command",
+    metadata: Optional[dict[str, Any]] = None,
+    created_by: Optional[str] = None,
+) -> dict:
+    if _server_control_mode(srv) != "bridge":
+        raise HTTPException(409, "Ce serveur n'est pas en mode bridge")
+    if not srv.get("bridge_token_hash"):
+        raise HTTPException(409, "Bridge token manquant pour ce serveur")
+    now_iso = _now_iso()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "server_id": srv["id"],
+        "kind": kind,
+        "command": command,
+        "metadata": metadata or {},
+        "status": "pending",
+        "attempts": 0,
+        "created_at": now_iso,
+        "created_by": created_by,
+        "dispatched_at": None,
+        "completed_at": None,
+        "output": None,
+    }
+    await db.cs2_bridge_commands.insert_one(doc)
+    return doc
+
+
+async def run_rcon_command(srv: dict, command: str) -> str:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_rcon_exec, srv["host"], srv["port"], _dec(srv["rcon_password"]), command),
+            timeout=12,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "RCON timeout — serveur injoignable")
+    except Exception as exc:
+        raise HTTPException(502, f"Erreur RCON : {exc}")
+
+
+async def run_server_command(
+    db,
+    srv: dict,
+    command: str,
+    *,
+    kind: str = "console_command",
+    metadata: Optional[dict[str, Any]] = None,
+    created_by: Optional[str] = None,
+) -> dict[str, Any]:
+    if _server_control_mode(srv) == "bridge":
+        queued = await queue_bridge_command(
+            db,
+            srv,
+            command,
+            kind=kind,
+            metadata=metadata,
+            created_by=created_by,
+        )
+        return {
+            "mode": "bridge",
+            "queued": True,
+            "command_id": queued["id"],
+            "output": "Commande placee en file d'attente pour le bridge serveur.",
+        }
+    output = await run_rcon_command(srv, command)
+    return {"mode": "rcon", "queued": False, "command_id": None, "output": output}
+
+
+def build_server_connect_url(srv: dict, *, spectator: bool = False) -> Optional[str]:
+    host = srv.get("public_host") or srv.get("host")
+    port = srv.get("gotv_port") if spectator else (srv.get("game_port") or srv.get("port"))
+    password_key = "gotv_password" if spectator else "join_password"
+    password = _dec(srv[password_key]) if srv.get(password_key) else None
+    return _private_steam_connect(host, port, password)
+
+
+def build_duel_matchzy_config(
+    *,
+    duel_id: str,
+    creator: dict,
+    opponent: dict,
+    map_name: str,
+    cvars: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    creator_name = str(creator.get("pseudo") or creator.get("steam_id") or "Joueur 1").strip()
+    opponent_name = str(opponent.get("pseudo") or opponent.get("steam_id") or "Joueur 2").strip()
+    return {
+        "matchid": duel_id,
+        "team1": {"name": creator_name, "players": {str(creator["steam_id"]): creator_name}},
+        "team2": {"name": opponent_name, "players": {str(opponent["steam_id"]): opponent_name}},
+        "num_maps": 1,
+        "maplist": [map_name],
+        "map_sides": ["knife"],
+        "clinch_series": True,
+        "players_per_team": 1,
+        "cvars": {
+            "hostname": f"ReadyUp Arena Duel | {creator_name} vs {opponent_name}",
+            **(cvars or {}),
+        },
+    }
+
+
+def matchzy_config_header() -> tuple[Optional[str], Optional[str]]:
+    return _matchzy_config_header()
+
+
+def matchzy_load_url_command(url: str, header_name: Optional[str] = None, header_value: Optional[str] = None) -> str:
+    return _matchzy_load_url_command(url, header_name, header_value)
+
+
+def backend_public_base() -> str:
+    return _backend_public_base()
+
+
+async def configure_matchzy_remote_log(
+    db,
+    srv: dict,
+    *,
+    created_by: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    webhook_url, auth_key, auth_value = _matchzy_remote_log_target()
+    if not webhook_url or not auth_key or not auth_value:
+        return []
+    commands = [
+        _matchzy_set_cvar_command("matchzy_remote_log_url", webhook_url),
+        _matchzy_set_cvar_command("matchzy_remote_log_auth_key", auth_key),
+        _matchzy_set_cvar_command("matchzy_remote_log_auth_value", auth_value),
+    ]
+    outputs: list[dict[str, Any]] = []
+    for command in commands:
+        result = await run_server_command(
+            db,
+            srv,
+            command,
+            kind="matchzy_remote_log",
+            metadata=metadata,
+            created_by=created_by,
+        )
+        outputs.append({
+            "command": command,
+            "mode": result["mode"],
+            "queued": result["queued"],
+            "command_id": result.get("command_id"),
+            "output": result.get("output"),
+        })
+    return outputs
 
 
 def build_cs2_router(db, get_current_user, get_admin_user, journal):
@@ -505,6 +673,40 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
         )
         return True
 
+    async def _try_apply_duel_matchzy_result(match_id: str, payload: dict[str, Any]) -> bool:
+        winner_team = str((payload.get("winner") or {}).get("team") or "").strip().lower()
+        if winner_team not in {"team1", "team2"}:
+            return False
+        duel = await db.duels.find_one({"id": str(match_id)}, {"_id": 0})
+        if not duel or not duel.get("opponent_id") or duel.get("status") == "closed":
+            return False
+        winner_id = duel["creator_id"] if winner_team == "team1" else duel["opponent_id"]
+        winner_pseudo = duel["creator_pseudo"] if winner_team == "team1" else duel.get("opponent_pseudo")
+        result = await db.duels.update_one(
+            {"id": str(match_id), "status": {"$ne": "closed"}},
+            {"$set": {
+                "status": "closed",
+                "winner_id": winner_id,
+                "winner_pseudo": winner_pseudo,
+                "closed_at": _now_iso(),
+                "result_source": "matchzy_webhook",
+                "launch_status": "finished",
+                "series_score": {
+                    "team1": payload.get("team1_series_score"),
+                    "team2": payload.get("team2_series_score"),
+                },
+            }},
+        )
+        if result.modified_count == 0:
+            return False
+        await db.users.update_one({"id": winner_id}, {"$inc": {"tokens": int(duel.get("stake", 0)) * 2}})
+        await journal(
+            "duel_result_auto",
+            None,
+            {"duel_id": str(match_id), "winner_team": winner_team, "winner_id": winner_id},
+        )
+        return True
+
     @router.post("/servers", dependencies=[Depends(get_admin_user)])
     async def create_server(req: ServerReq, user=Depends(get_admin_user)):
         control_mode = (req.control_mode or "rcon").strip().lower()
@@ -523,6 +725,8 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
             "public_host": req.public_host or req.host,
             "game_port": req.game_port or req.port,
             "gotv_port": req.gotv_port,
+            "join_password": _enc(req.join_password) if req.join_password else None,
+            "gotv_password": _enc(req.gotv_password) if req.gotv_password else None,
             "panel_url": req.panel_url,
             "matchzy_enabled": req.matchzy_enabled,
             "cssimpleadmin_enabled": req.cssimpleadmin_enabled,
@@ -530,7 +734,7 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
             "hltv_enabled": req.hltv_enabled or bool(req.gotv_port),
             "notes": req.notes,
             "status": "unknown", "last_checked_at": None,
-            "current_match_id": None, "current_tournament_id": None, "current_bracket_match_id": None,
+            "current_match_id": None, "current_tournament_id": None, "current_bracket_match_id": None, "current_duel_id": None,
             "last_match_id": None, "last_bridge_seen_at": None, "created_at": _now_iso(),
             "created_by": user["id"],
         }
@@ -545,6 +749,10 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
         next_mode = str(updates.get("control_mode") or srv.get("control_mode") or "rcon").strip().lower()
         if "rcon_password" in updates:
             updates["rcon_password"] = _enc(updates["rcon_password"])
+        if "join_password" in updates:
+            updates["join_password"] = _enc(updates["join_password"]) if updates["join_password"] else None
+        if "gotv_password" in updates:
+            updates["gotv_password"] = _enc(updates["gotv_password"]) if updates["gotv_password"] else None
         if "bridge_token" in updates:
             updates["bridge_token_hash"] = _hash_secret(updates.pop("bridge_token"))
         if next_mode == "rcon" and not (updates.get("rcon_password") or srv.get("rcon_password")):
@@ -889,10 +1097,12 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
                     "current_match_id": None,
                     "current_tournament_id": None,
                     "current_bracket_match_id": None,
+                    "current_duel_id": None,
                 }},
             )
         if payload.get("event") == "series_end" and payload.get("matchid"):
             await _try_apply_matchzy_result(str(payload.get("matchid")), payload)
+            await _try_apply_duel_matchzy_result(str(payload.get("matchid")), payload)
         return {"received": True, "id": event["id"]}
 
     @router.get("/events")

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, Query, Header
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import asyncio, html, json, re, time
@@ -11,8 +11,9 @@ from jose import jwt, JWTError
 from urllib.parse import urlencode, urlparse
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional
+from typing import Any, List, Optional
 from datetime import datetime, timezone, timedelta
+from pymongo import ReturnDocument
 
 try:
     from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
@@ -49,7 +50,16 @@ db = client[db_name]
 
 import redis_state as rs
 from seed_data import seed_all
-from cs2 import build_cs2_router
+from cs2 import (
+    backend_public_base,
+    build_cs2_router,
+    build_duel_matchzy_config,
+    build_server_connect_url,
+    configure_matchzy_remote_log,
+    matchzy_config_header,
+    matchzy_load_url_command,
+    run_server_command,
+)
 from bracket import build_bracket_router
 from email_service import send_email, reset_email_html
 
@@ -2944,10 +2954,249 @@ async def revoke_card(card_id: str, mod=Depends(get_current_user)):
     return {"ok": True}
 
 # ----- DUELS 1v1 (virtual tokens, no real value) -----
+DUEL_MAPS = ["Mirage", "Inferno", "Anubis", "Nuke", "Vertigo", "Ancient", "Dust2"]
+DUEL_MAP_CODE_BY_LABEL = {
+    "Mirage": "de_mirage",
+    "Inferno": "de_inferno",
+    "Anubis": "de_anubis",
+    "Nuke": "de_nuke",
+    "Vertigo": "de_vertigo",
+    "Ancient": "de_ancient",
+    "Dust2": "de_dust2",
+}
+DUEL_ACTIVE_STATUSES = {"veto", "launch_pending", "ready", "live", "in_progress"}
+
+
+def _normalize_duel_map(raw_map: str) -> str:
+    value = str(raw_map or "").strip().lower()
+    aliases = {
+        "mirage": "Mirage",
+        "de_mirage": "Mirage",
+        "inferno": "Inferno",
+        "de_inferno": "Inferno",
+        "anubis": "Anubis",
+        "de_anubis": "Anubis",
+        "nuke": "Nuke",
+        "de_nuke": "Nuke",
+        "vertigo": "Vertigo",
+        "de_vertigo": "Vertigo",
+        "ancient": "Ancient",
+        "de_ancient": "Ancient",
+        "dust2": "Dust2",
+        "de_dust2": "Dust2",
+    }
+    label = aliases.get(value)
+    if not label:
+        raise HTTPException(400, "Map duel invalide")
+    return label
+
+
+def _duel_matchzy_map(raw_map: str) -> str:
+    label = _normalize_duel_map(raw_map)
+    return DUEL_MAP_CODE_BY_LABEL[label]
+
+
+def _has_steam_ready(doc: Optional[dict]) -> bool:
+    steam_id = str((doc or {}).get("steam_id") or "").strip()
+    return bool(steam_id and steam_id.isdigit())
+
+
+def _duel_participant_ids(duel: dict) -> set[str]:
+    ids = {str(duel.get("creator_id") or "")}
+    if duel.get("opponent_id"):
+        ids.add(str(duel.get("opponent_id")))
+    return {item for item in ids if item}
+
+
+def _duel_turn_pseudo(duel: dict) -> Optional[str]:
+    if duel.get("veto_turn_user_id") == duel.get("creator_id"):
+        return duel.get("creator_pseudo")
+    if duel.get("veto_turn_user_id") == duel.get("opponent_id"):
+        return duel.get("opponent_pseudo")
+    return None
+
+
+def _duel_public_payload(duel: dict, viewer_id: Optional[str] = None) -> dict:
+    participant_ids = _duel_participant_ids(duel)
+    is_participant = bool(viewer_id and viewer_id in participant_ids)
+    server_meta = None
+    if duel.get("server_id"):
+        server_meta = {
+            "id": duel.get("server_id"),
+            "name": duel.get("server_name"),
+            "host": duel.get("server_host"),
+            "game_port": duel.get("server_game_port"),
+            "gotv_port": duel.get("server_gotv_port"),
+        }
+    return {
+        "id": duel["id"],
+        "creator_id": duel["creator_id"],
+        "creator_pseudo": duel["creator_pseudo"],
+        "opponent_id": duel.get("opponent_id"),
+        "opponent_pseudo": duel.get("opponent_pseudo"),
+        "stake": int(duel.get("stake", 0)),
+        "pot": int(duel.get("stake", 0)) * 2,
+        "status": duel.get("status", "open"),
+        "preferred_map": duel.get("preferred_map") or duel.get("map"),
+        "selected_map": duel.get("selected_map") or duel.get("map"),
+        "remaining_maps": duel.get("map_pool") or [],
+        "veto_history": duel.get("veto_history") or [],
+        "veto_turn_user_id": duel.get("veto_turn_user_id"),
+        "veto_turn_pseudo": _duel_turn_pseudo(duel),
+        "created_at": duel.get("created_at"),
+        "accepted_at": duel.get("accepted_at"),
+        "started_at": duel.get("started_at"),
+        "closed_at": duel.get("closed_at"),
+        "winner_id": duel.get("winner_id"),
+        "winner_pseudo": duel.get("winner_pseudo"),
+        "launch_status": duel.get("launch_status"),
+        "launch_error": duel.get("launch_error"),
+        "server": server_meta,
+        "is_participant": is_participant,
+        "is_my_turn": bool(is_participant and viewer_id == duel.get("veto_turn_user_id") and duel.get("status") == "veto"),
+        "can_join": bool(is_participant and duel.get("server_id") and duel.get("status") in DUEL_ACTIVE_STATUSES),
+        "join_cta": "Rejoindre le serveur" if duel.get("server_id") and duel.get("status") in DUEL_ACTIVE_STATUSES else None,
+    }
+
+
+async def _reserve_duel_server(duel_id: str) -> Optional[dict]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return await db.cs2_servers.find_one_and_update(
+        {
+            "matchzy_enabled": True,
+            "current_match_id": None,
+            "status": {"$nin": ["live", "launch_pending", "allocating"]},
+        },
+        {"$set": {
+            "current_match_id": duel_id,
+            "current_duel_id": duel_id,
+            "last_match_id": duel_id,
+            "status": "allocating",
+            "last_checked_at": now_iso,
+        }},
+        sort=[("last_checked_at", 1), ("created_at", 1)],
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def _release_duel_server(server_id: str, duel_id: str) -> None:
+    await db.cs2_servers.update_one(
+        {"id": server_id, "current_match_id": duel_id},
+        {"$set": {
+            "status": "online",
+            "current_match_id": None,
+            "current_duel_id": None,
+            "current_tournament_id": None,
+            "current_bracket_match_id": None,
+            "last_checked_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+
+async def _store_duel_matchzy_config(duel_id: str, server_id: str, config: dict[str, Any]) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.duel_match_configs.replace_one(
+        {"duel_id": duel_id},
+        {
+            "id": duel_id,
+            "duel_id": duel_id,
+            "server_id": server_id,
+            "config": config,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        },
+        upsert=True,
+    )
+
+
+async def _launch_duel_match(duel: dict) -> dict:
+    creator = await db.users.find_one({"id": duel["creator_id"]}, {"_id": 0, "id": 1, "pseudo": 1, "steam_id": 1})
+    opponent = await db.users.find_one({"id": duel["opponent_id"]}, {"_id": 0, "id": 1, "pseudo": 1, "steam_id": 1})
+    if not _has_steam_ready(creator) or not _has_steam_ready(opponent):
+        raise HTTPException(409, "Les deux joueurs doivent lier leur Steam avant le lancement du duel")
+    selected_map = duel.get("selected_map")
+    if not selected_map:
+        raise HTTPException(409, "La map finale du duel n'est pas encore definie")
+    public_base = backend_public_base()
+    if not public_base:
+        raise HTTPException(500, "BACKEND_PUBLIC_URL manquant pour lancer un duel MatchZy")
+
+    server = await _reserve_duel_server(duel["id"])
+    if not server:
+        raise HTTPException(409, "Aucun serveur CS2 libre n'est disponible pour ce duel")
+
+    try:
+        config = build_duel_matchzy_config(
+            duel_id=duel["id"],
+            creator=creator,
+            opponent=opponent,
+            map_name=_duel_matchzy_map(selected_map),
+            cvars={"hostname": f"ReadyUp Arena Duel | {creator['pseudo']} vs {opponent['pseudo']}"},
+        )
+        await _store_duel_matchzy_config(duel["id"], server["id"], config)
+        config_url = f"{public_base}/api/duels/{duel['id']}/matchzy-config"
+        header_name, header_value = matchzy_config_header()
+        remote_log_outputs = await configure_matchzy_remote_log(
+            db,
+            server,
+            created_by=duel["creator_id"],
+            metadata={"duel_id": duel["id"], "config_url": config_url},
+        )
+        command = matchzy_load_url_command(config_url, header_name, header_value)
+        result = await run_server_command(
+            db,
+            server,
+            command,
+            kind="launch_duel_match",
+            metadata={"duel_id": duel["id"], "config_url": config_url},
+            created_by=duel["creator_id"],
+        )
+        launch_status = "launch_pending" if result["queued"] else "ready"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.cs2_servers.update_one(
+            {"id": server["id"]},
+            {"$set": {
+                "current_match_id": duel["id"],
+                "current_duel_id": duel["id"],
+                "last_match_id": duel["id"],
+                "status": "launch_pending" if result["queued"] else "live",
+                "last_checked_at": now_iso,
+            }},
+        )
+        payload = {
+            "status": launch_status,
+            "launch_status": launch_status,
+            "launch_error": None,
+            "started_at": now_iso,
+            "server_id": server["id"],
+            "server_name": server.get("name"),
+            "server_host": server.get("public_host") or server.get("host"),
+            "server_game_port": server.get("game_port") or server.get("port"),
+            "server_gotv_port": server.get("gotv_port"),
+            "matchzy_config_url": config_url,
+            "launch_command_id": result.get("command_id"),
+            "launch_mode": result.get("mode"),
+            "remote_log_configured": bool(remote_log_outputs),
+        }
+        await db.duels.update_one({"id": duel["id"]}, {"$set": payload})
+        await journal("duel_match_launched", duel["creator_id"], {"duel_id": duel["id"], "server_id": server["id"], "status": launch_status})
+        return payload
+    except HTTPException:
+        await _release_duel_server(server["id"], duel["id"])
+        raise
+    except Exception as exc:
+        await _release_duel_server(server["id"], duel["id"])
+        raise HTTPException(502, f"Echec du lancement MatchZy du duel : {exc}")
+
+
 class DuelReq(BaseModel):
     map_: str = Field(alias="map", min_length=2, max_length=24)
     stake: int = Field(ge=10, le=5000)
     class Config: populate_by_name = True
+
+
+class DuelVetoReq(BaseModel):
+    map: str = Field(min_length=2, max_length=24)
 
 async def get_balance(user_id: str) -> int:
     u = await db.users.find_one({"id": user_id}, {"tokens": 1})
@@ -2963,28 +3212,62 @@ async def my_balance(user=Depends(get_current_user)):
 
 @duels_router.post("/create", dependencies=[Depends(get_current_user)])
 async def create_duel(req: DuelReq, user=Depends(get_current_user)):
+    if not _has_steam_ready(user):
+        raise HTTPException(400, "Liez votre compte Steam avant de creer un duel CS2")
     bal = await get_balance(user["id"])
     if bal < req.stake: raise HTTPException(400, f"Solde insuffisant ({bal} jetons)")
-    # Reserve stake
+    preferred_map = _normalize_duel_map(req.map_)
     await db.users.update_one({"id": user["id"]}, {"$inc": {"tokens": -req.stake}})
     duel = {
         "id": str(uuid.uuid4()), "creator_id": user["id"], "creator_pseudo": user["pseudo"],
         "opponent_id": None, "opponent_pseudo": None,
-        "map": req.map_, "stake": req.stake, "status": "open",
+        "map": preferred_map, "preferred_map": preferred_map,
+        "selected_map": None, "map_pool": None, "veto_history": [], "veto_turn_user_id": None,
+        "server_id": None, "server_name": None, "server_host": None, "server_game_port": None, "server_gotv_port": None,
+        "launch_status": "open", "launch_error": None,
+        "stake": req.stake, "status": "open",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.duels.insert_one(duel)
-    await journal("duel_created", user["id"], {"duel_id": duel["id"], "stake": req.stake, "map": req.map_})
-    return {k: v for k, v in duel.items() if k != "_id"}
+    await journal("duel_created", user["id"], {"duel_id": duel["id"], "stake": req.stake, "map": preferred_map})
+    return _duel_public_payload(duel, user["id"])
 
 @duels_router.get("")
 async def list_open_duels(status_f: str = "open"):
-    docs = await db.duels.find({"status": status_f}, {"_id": 0}).sort("created_at", -1).to_list(50)
-    return docs
+    safe_status = "open" if status_f != "open" else status_f
+    docs = await db.duels.find({"status": safe_status}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return [_duel_public_payload(doc) for doc in docs]
+
+
+@duels_router.get("/mine", dependencies=[Depends(get_current_user)])
+async def list_my_duels(user=Depends(get_current_user)):
+    docs = await db.duels.find(
+        {"$or": [{"creator_id": user["id"]}, {"opponent_id": user["id"]}]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(100)
+    return [_duel_public_payload(doc, user["id"]) for doc in docs]
+
+
+@duels_router.get("/{duel_id}/matchzy-config")
+async def get_duel_matchzy_config(
+    duel_id: str,
+    authorization: Optional[str] = Header(default=None),
+    x_matchzy_token: Optional[str] = Header(default=None),
+):
+    header_name, header_value = matchzy_config_header()
+    if header_value:
+        expected_token = header_value.replace("Bearer ", "", 1)
+        provided_token = (authorization or "").replace("Bearer ", "", 1) or (x_matchzy_token or "")
+        if not secrets.compare_digest(provided_token, expected_token):
+            raise HTTPException(401, "Config MatchZy non autorisee")
+    doc = await db.duel_match_configs.find_one({"duel_id": duel_id}, {"_id": 0, "config": 1})
+    if not doc:
+        raise HTTPException(404, "Configuration duel introuvable")
+    return doc["config"]
 
 @duels_router.post("/{duel_id}/accept", dependencies=[Depends(get_current_user)])
 async def accept_duel(duel_id: str, user=Depends(get_current_user)):
-    duel = await db.duels.find_one({"id": duel_id})
+    duel = await db.duels.find_one({"id": duel_id}, {"_id": 0})
     if not duel: raise HTTPException(404, "Duel introuvable")
     if duel["status"] != "open": raise HTTPException(400, "Duel déjà accepté ou clos")
     if duel["creator_id"] == user["id"]: raise HTTPException(400, "Impossible d'accepter son propre duel")
@@ -2997,8 +3280,159 @@ async def accept_duel(duel_id: str, user=Depends(get_current_user)):
     await journal("duel_accepted", user["id"], {"duel_id": duel_id})
     return {"ok": True, "duel_id": duel_id}
 
+
 class DuelResultReq(BaseModel):
     winner_id: str
+
+
+@duels_router.post("/{duel_id}/accept-cs2", dependencies=[Depends(get_current_user)])
+async def accept_duel_cs2(duel_id: str, user=Depends(get_current_user)):
+    duel = await db.duels.find_one({"id": duel_id}, {"_id": 0})
+    if not duel:
+        raise HTTPException(404, "Duel introuvable")
+    if duel["status"] != "open":
+        raise HTTPException(400, "Duel deja accepte ou clos")
+    if duel["creator_id"] == user["id"]:
+        raise HTTPException(400, "Impossible d'accepter son propre duel")
+    if not _has_steam_ready(user):
+        raise HTTPException(400, "Liez votre compte Steam avant d'accepter un duel CS2")
+    creator = await db.users.find_one({"id": duel["creator_id"]}, {"_id": 0, "steam_id": 1})
+    if not _has_steam_ready(creator):
+        raise HTTPException(409, "Le createur du duel doit lier son Steam avant le lancement")
+    bal = await get_balance(user["id"])
+    if bal < duel["stake"]:
+        raise HTTPException(400, f"Solde insuffisant ({bal} jetons)")
+    await db.users.update_one({"id": user["id"]}, {"$inc": {"tokens": -duel["stake"]}})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = await db.duels.update_one(
+        {"id": duel_id, "status": "open"},
+        {"$set": {
+            "opponent_id": user["id"],
+            "opponent_pseudo": user["pseudo"],
+            "status": "veto",
+            "accepted_at": now_iso,
+            "map_pool": DUEL_MAPS.copy(),
+            "veto_history": [],
+            "veto_turn_user_id": duel["creator_id"],
+            "launch_status": "veto_pending",
+            "launch_error": None,
+        }},
+    )
+    if result.modified_count == 0:
+        await db.users.update_one({"id": user["id"]}, {"$inc": {"tokens": duel["stake"]}})
+        raise HTTPException(409, "Le duel vient d'etre modifie, rechargez la page")
+    await journal("duel_accepted_cs2", user["id"], {"duel_id": duel_id})
+    updated = await db.duels.find_one({"id": duel_id}, {"_id": 0})
+    return _duel_public_payload(updated or {**duel, "opponent_id": user["id"], "opponent_pseudo": user["pseudo"], "status": "veto"}, user["id"])
+
+
+@duels_router.post("/{duel_id}/ban", dependencies=[Depends(get_current_user)])
+async def ban_duel_map(duel_id: str, req: DuelVetoReq, user=Depends(get_current_user)):
+    duel = await db.duels.find_one({"id": duel_id}, {"_id": 0})
+    if not duel:
+        raise HTTPException(404, "Duel introuvable")
+    if duel.get("status") != "veto":
+        raise HTTPException(400, "Le duel n'est pas en phase de veto")
+    if user["id"] not in _duel_participant_ids(duel):
+        raise HTTPException(403, "Acces refuse")
+    if duel.get("veto_turn_user_id") != user["id"]:
+        raise HTTPException(409, "Ce n'est pas votre tour pour bannir une map")
+    remaining_maps = [_normalize_duel_map(item) for item in (duel.get("map_pool") or DUEL_MAPS.copy())]
+    ban_map = _normalize_duel_map(req.map)
+    if ban_map not in remaining_maps:
+        raise HTTPException(400, "Cette map n'est pas disponible pour le veto")
+    if len(remaining_maps) <= 1:
+        raise HTTPException(409, "Le veto est deja termine")
+    remaining_maps = [item for item in remaining_maps if item != ban_map]
+    veto_history = list(duel.get("veto_history") or [])
+    veto_history.append({
+        "by_user_id": user["id"],
+        "by_pseudo": user["pseudo"],
+        "action": "ban",
+        "map": ban_map,
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    next_turn = duel["opponent_id"] if user["id"] == duel["creator_id"] else duel["creator_id"]
+    updates: dict[str, Any] = {
+        "map_pool": remaining_maps,
+        "veto_history": veto_history,
+        "veto_turn_user_id": next_turn,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if len(remaining_maps) == 1:
+        updates.update({
+            "selected_map": remaining_maps[0],
+            "veto_turn_user_id": None,
+            "status": "launch_pending",
+            "launch_status": "allocating_server",
+            "veto_completed_at": datetime.now(timezone.utc).isoformat(),
+        })
+    updated = await db.duels.find_one_and_update(
+        {"id": duel_id, "status": "veto", "veto_turn_user_id": user["id"]},
+        {"$set": updates},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    if not updated:
+        raise HTTPException(409, "Le duel a change pendant le veto, rechargez la page")
+    if len(remaining_maps) == 1:
+        try:
+            launch_updates = await _launch_duel_match(updated)
+            updated.update(launch_updates)
+        except HTTPException as exc:
+            await db.duels.update_one(
+                {"id": duel_id},
+                {"$set": {"status": "launch_failed", "launch_status": "failed", "launch_error": str(exc.detail)}},
+            )
+            raise
+    await journal("duel_map_banned", user["id"], {"duel_id": duel_id, "map": ban_map})
+    return _duel_public_payload(updated, user["id"])
+
+
+@duels_router.post("/{duel_id}/join", dependencies=[Depends(get_current_user)])
+async def join_duel_server(duel_id: str, user=Depends(get_current_user)):
+    duel = await db.duels.find_one({"id": duel_id}, {"_id": 0})
+    if not duel:
+        raise HTTPException(404, "Duel introuvable")
+    if user["id"] not in _duel_participant_ids(duel):
+        raise HTTPException(403, "Acces refuse")
+    if duel.get("status") not in DUEL_ACTIVE_STATUSES or not duel.get("server_id"):
+        raise HTTPException(409, "Le serveur du duel n'est pas encore pret")
+    server = await db.cs2_servers.find_one({"id": duel["server_id"]})
+    if not server:
+        raise HTTPException(404, "Serveur duel introuvable")
+    join_url = build_server_connect_url(server)
+    if not join_url:
+        raise HTTPException(409, "Connexion Steam indisponible pour ce serveur")
+    return {"ok": True, "join_url": join_url, "server_name": server.get("name"), "map": duel.get("selected_map")}
+
+
+@duels_router.post("/{duel_id}/result-manual", dependencies=[Depends(get_current_user)])
+async def report_duel_result_manual(duel_id: str, req: DuelResultReq, reporter=Depends(get_current_user)):
+    duel = await db.duels.find_one({"id": duel_id}, {"_id": 0})
+    if not duel:
+        raise HTTPException(404, "Duel introuvable")
+    if duel["status"] not in DUEL_ACTIVE_STATUSES:
+        raise HTTPException(400, "Duel non en cours")
+    if req.winner_id not in (duel["creator_id"], duel["opponent_id"]):
+        raise HTTPException(400, "Le gagnant doit etre l'un des 2 participants")
+    pot = duel["stake"] * 2
+    await db.users.update_one({"id": req.winner_id}, {"$inc": {"tokens": pot}})
+    winner_pseudo = duel["creator_pseudo"] if req.winner_id == duel["creator_id"] else duel.get("opponent_pseudo")
+    await db.duels.update_one(
+        {"id": duel_id, "status": {"$in": list(DUEL_ACTIVE_STATUSES)}},
+        {"$set": {
+            "status": "closed",
+            "winner_id": req.winner_id,
+            "winner_pseudo": winner_pseudo,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "result_source": "manual_report",
+        }},
+    )
+    if duel.get("server_id"):
+        await _release_duel_server(duel["server_id"], duel_id)
+    await journal("duel_closed_manual", reporter["id"], {"duel_id": duel_id, "winner": req.winner_id, "pot": pot})
+    return {"ok": True, "winner_id": req.winner_id, "pot_awarded": pot}
 
 @duels_router.post("/{duel_id}/result", dependencies=[Depends(get_current_user)])
 async def report_result(duel_id: str, req: DuelResultReq, reporter=Depends(get_current_user)):
