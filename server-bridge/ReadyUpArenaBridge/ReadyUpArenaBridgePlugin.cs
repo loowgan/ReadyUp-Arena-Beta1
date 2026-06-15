@@ -42,7 +42,11 @@ public sealed class ReadyUpArenaBridgePlugin : BasePlugin
         });
 
         AddTimer(Math.Max(2, _config.PollIntervalSeconds), PollTimer, TimerFlags.REPEAT);
-        _ = Task.Run(() => SendHeartbeatAsync("online"));
+        Server.NextWorldUpdate(() =>
+        {
+            var heartbeat = BuildHeartbeatRequest("online");
+            _ = Task.Run(() => SendHeartbeatAsync(heartbeat));
+        });
     }
 
     public override void Unload(bool hotReload)
@@ -125,7 +129,8 @@ public sealed class ReadyUpArenaBridgePlugin : BasePlugin
         {
             try
             {
-                await SendHeartbeatAsync(null);
+                var heartbeat = BuildHeartbeatRequest(null);
+                await SendHeartbeatAsync(heartbeat);
                 var commands = await PullPendingCommandsAsync();
                 foreach (var command in commands)
                 {
@@ -165,15 +170,19 @@ public sealed class ReadyUpArenaBridgePlugin : BasePlugin
         });
     }
 
-    private async Task SendHeartbeatAsync(string? status)
+    private BridgeHeartbeatRequest BuildHeartbeatRequest(string? status)
     {
-        var request = new BridgeHeartbeatRequest
+        return new BridgeHeartbeatRequest
         {
             Status = status,
             CurrentMap = string.IsNullOrWhiteSpace(_currentMap) ? Server.MapName : _currentMap,
             PlayerCount = Utilities.GetPlayers().Count(p => p is { IsValid: true, IsBot: false }),
             PluginVersion = ModuleVersion,
         };
+    }
+
+    private async Task SendHeartbeatAsync(BridgeHeartbeatRequest request)
+    {
         await PostJsonAsync("/api/cs2/bridge/heartbeat", request);
     }
 
