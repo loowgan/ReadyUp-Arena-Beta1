@@ -125,26 +125,40 @@ public sealed class ReadyUpArenaBridgePlugin : BasePlugin
             return;
         }
 
-        _ = Task.Run(async () =>
+        Server.NextWorldUpdate(() =>
         {
+            BridgeHeartbeatRequest heartbeat;
             try
             {
-                var heartbeat = BuildHeartbeatRequest(null);
-                await SendHeartbeatAsync(heartbeat);
-                var commands = await PullPendingCommandsAsync();
-                foreach (var command in commands)
-                {
-                    DispatchCommand(command);
-                }
+                heartbeat = BuildHeartbeatRequest(null);
             }
             catch (Exception ex)
             {
-                Logger.LogWarning(ex, "ReadyUp bridge poll failed");
-            }
-            finally
-            {
+                Logger.LogWarning(ex, "ReadyUp bridge heartbeat snapshot failed");
                 Interlocked.Exchange(ref _pollInFlight, 0);
+                return;
             }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await SendHeartbeatAsync(heartbeat);
+                    var commands = await PullPendingCommandsAsync();
+                    foreach (var command in commands)
+                    {
+                        DispatchCommand(command);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(ex, "ReadyUp bridge poll failed");
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _pollInFlight, 0);
+                }
+            });
         });
     }
 
