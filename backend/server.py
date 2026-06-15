@@ -102,6 +102,11 @@ class ProfileUpdateReq(BaseModel):
     custom_avatar_url: Optional[str] = Field(default=None, max_length=600)
 
 
+class SteamMergeConfirmReq(BaseModel):
+    token: str = Field(min_length=16, max_length=2048)
+    strategy: str = Field(pattern="^(keep_current|keep_other_progression)$")
+
+
 class UserPublic(BaseModel):
     id: str
     pseudo: str
@@ -163,6 +168,36 @@ def make_token(user_id: str, pseudo: str) -> str:
                "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXP_HOURS),
                "iat": datetime.now(timezone.utc)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+def make_steam_link_token(user_id: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": user_id,
+        "kind": "steam_link",
+        "exp": now + timedelta(minutes=10),
+        "iat": now,
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+def make_steam_merge_token(current_user_id: str, other_user_id: str, steam_id: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": current_user_id,
+        "other_user_id": other_user_id,
+        "steam_id": steam_id,
+        "kind": "steam_merge",
+        "exp": now + timedelta(minutes=10),
+        "iat": now,
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+class SteamMergeRequired(Exception):
+    def __init__(self, merge_token: str):
+        self.merge_token = merge_token
+        super().__init__("steam_merge_required")
 
 async def journal(event_type: str, user_id: Optional[str], meta: dict = None):
     await db.audit_logs.insert_one({
@@ -794,6 +829,557 @@ def _remaining_slots(max_entries: Optional[int], current_entries: int) -> Option
     if max_entries is None or max_entries <= 0:
         return None
     return max(max_entries - current_entries, 0)
+
+
+AUTO_TEAM_SIZE = 5
+AUTO_TEAM_MIN_TEAMS = 2
+AUTO_TEAM_COLORS = ["#FF4600", "#00F0FF", "#FF003C", "#10B981", "#8B5CF6", "#FFB800"]
+
+
+def _build_auto_solo_teams(solo_entries: list[dict], slots_remaining: int) -> tuple[list[dict], list[dict]]:
+    if slots_remaining <= 0:
+        return [], solo_entries
+
+    possible_teams = min(len(solo_entries) // AUTO_TEAM_SIZE, slots_remaining)
+    if possible_teams < AUTO_TEAM_MIN_TEAMS:
+        return [], solo_entries
+
+    teams: list[dict] = []
+    consumed = possible_teams * AUTO_TEAM_SIZE
+    for index in range(possible_teams):
+        chunk = solo_entries[index * AUTO_TEAM_SIZE:(index + 1) * AUTO_TEAM_SIZE]
+        if len(chunk) < AUTO_TEAM_SIZE:
+            break
+        avg_elo = round(sum(float(player.get("elo") or 0) for player in chunk) / len(chunk))
+        avg_level = round(sum(float(player.get("level") or 1) for player in chunk) / len(chunk))
+        avg_reliability = round(sum(float(player.get("reliability") or 50) for player in chunk) / len(chunk))
+        team_name = f"Escouade solo {index + 1}"
+        color = AUTO_TEAM_COLORS[index % len(AUTO_TEAM_COLORS)]
+        teams.append({
+            "id": f"auto-solo-{index + 1}",
+            "name": team_name,
+            "tag": f"S{index + 1:02d}",
+            "logo_color": color,
+            "country": chunk[0].get("country") or "EU",
+            "level": avg_level,
+            "elo": avg_elo,
+            "wins": 0,
+            "losses": 0,
+            "trophies": 0,
+            "reliability": avg_reliability,
+            "members_count": len(chunk),
+            "members_limit": AUTO_TEAM_SIZE,
+            "captain_pseudo": chunk[0].get("pseudo"),
+            "description": "Equipe auto-composee a partir de la file solo du tournoi.",
+            "language": "MULTI",
+            "discord_url": None,
+            "recruitment_status": "closed",
+            "members": chunk,
+            "generated_from_solos": True,
+        })
+    return teams, solo_entries[consumed:]
+
+
+async def _build_tournament_registration_snapshot(tournament_doc: dict) -> dict:
+    tid = tournament_doc["id"]
+    regs = await db.tournament_registrations.find({"tournament_id": tid}, {"_id": 0}).sort("created_at", 1).to_list(300)
+
+    team_entries: list[dict] = []
+    solo_entries: list[dict] = []
+
+    for reg in regs:
+        if reg["entity_type"] == "team":
+            team_doc = await db.teams.find_one({"id": reg.get("entity_id")}, {"_id": 0}) if reg.get("entity_id") else None
+            team_entries.append(team_doc or {
+                "id": reg["id"],
+                "name": reg["entity_name"],
+                "tag": reg["entity_name"][:4].upper(),
+                "elo": 0,
+                "logo_color": "#6b7280",
+                "country": "EU",
+                "level": 1,
+                "wins": 0,
+                "losses": 0,
+                "trophies": 0,
+                "reliability": 50,
+                "members_count": AUTO_TEAM_SIZE,
+                "members_limit": AUTO_TEAM_SIZE,
+                "captain_pseudo": None,
+                "generated_from_solos": False,
+            })
+            continue
+
+        user_doc = await db.users.find_one({"id": reg.get("user_id")}, {"_id": 0, "password_hash": 0})
+        player_doc = None
+        if not user_doc and reg.get("entity_id"):
+            player_doc = await db.players.find_one({"id": reg.get("entity_id")}, {"_id": 0})
+        source_doc = user_doc or player_doc or {}
+        solo_entries.append({
+            "id": source_doc.get("id") or reg["id"],
+            "pseudo": source_doc.get("pseudo") or reg["entity_name"],
+            "role": source_doc.get("role") or "Polyvalent",
+            "online": bool(source_doc.get("online", True)),
+            "steam_verified": bool(source_doc.get("steam_verified", False)),
+            "country": source_doc.get("country") or "EU",
+            "level": source_doc.get("level") or 1,
+            "elo": source_doc.get("platform_elo", source_doc.get("elo", 1000)),
+            "faceit_elo": source_doc.get("faceit_elo"),
+            "premier_rating": source_doc.get("premier_rating"),
+            "kdr": _compute_kdr(source_doc) if source_doc else None,
+            "reliability": source_doc.get("reliability", 50),
+            "rank_cs2": source_doc.get("rank_cs2"),
+            "avatar_url": source_doc.get("custom_avatar_url") or source_doc.get("steam_avatar_url"),
+            "source": "solo_registration",
+        })
+
+    capacity = int(tournament_doc.get("capacity", 0) or 0)
+    manual_team_count = len(team_entries)
+    slots_remaining = max(capacity - manual_team_count, 0)
+    auto_teams, remaining_solos = _build_auto_solo_teams(solo_entries, slots_remaining)
+    effective_registered = manual_team_count + len(auto_teams)
+
+    return {
+        "registrations": regs,
+        "teams_in": [*team_entries, *auto_teams],
+        "manual_teams_count": manual_team_count,
+        "auto_generated_teams": auto_teams,
+        "auto_generated_teams_count": len(auto_teams),
+        "solo_queue": remaining_solos,
+        "solo_queue_original_count": len(solo_entries),
+        "solo_waiting_count": len(remaining_solos),
+        "registered_effective": effective_registered,
+        "registrations_count": len(regs),
+    }
+
+
+async def _resolve_available_pseudo(base_pseudo: str, user_id: Optional[str] = None, fallback_suffix: Optional[str] = None) -> str:
+    candidate = (base_pseudo or "").strip()[:24]
+    if not candidate:
+        candidate = f"Steam_{(fallback_suffix or uuid.uuid4().hex[-6:])[-6:]}"
+    query = {"pseudo": candidate}
+    if user_id:
+        query["id"] = {"$ne": user_id}
+    taken = await db.users.find_one(query, {"_id": 0, "id": 1})
+    if not taken:
+        return candidate
+    suffix = (fallback_suffix or uuid.uuid4().hex[-4:])[-4:]
+    return f"{candidate[:19]}_{suffix}"
+
+
+def _build_steam_user_doc(steam_id: str, request: Request) -> dict:
+    return {
+        "id": str(uuid.uuid4()),
+        "pseudo": f"Steam_{steam_id[-6:]}",
+        "email": f"steam_{steam_id}@readyup.local",
+        "password_hash": hash_password(uuid.uuid4().hex),
+        "country": "??",
+        "gender": None,
+        "age": None,
+        "bio": None,
+        "custom_avatar_url": None,
+        "steam_avatar_url": None,
+        "level": 1,
+        "xp": 0,
+        "elo": 1000,
+        "platform_elo": 1000,
+        "faceit_elo": None,
+        "premier_rating": None,
+        "premier_status": None,
+        "kills_30d": None,
+        "deaths_30d": None,
+        "kdr": None,
+        "rank_cs2": None,
+        "role": "Polyvalent",
+        "reliability": 55,
+        "stats_last_sync_at": None,
+        "steam_verified": True,
+        "steam_id": steam_id,
+        "team_id": None,
+        "team_role": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "ip": request.client.host if request.client else None,
+    }
+
+
+def _looks_placeholder_email(email: Optional[str]) -> bool:
+    value = (email or "").strip().lower()
+    return not value or value.endswith("@readyup.local")
+
+
+def _looks_placeholder_pseudo(pseudo: Optional[str]) -> bool:
+    value = (pseudo or "").strip()
+    return not value or value.startswith("Steam_")
+
+
+def _meaningful_text(value: Optional[str], invalid_values: Optional[set[str]] = None) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return False
+    if invalid_values and text in invalid_values:
+        return False
+    return True
+
+
+def _parse_iso_or_min(value: Optional[str]) -> datetime:
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _steam_stats_preferred_doc(primary: dict, secondary: dict) -> dict:
+    primary_sync = _parse_iso_or_min(primary.get("stats_last_sync_at"))
+    secondary_sync = _parse_iso_or_min(secondary.get("stats_last_sync_at"))
+    return secondary if secondary_sync > primary_sync else primary
+
+
+async def _load_user_from_steam_link_token(link_token: Optional[str]) -> Optional[dict]:
+    if not link_token:
+        return None
+    try:
+        payload = jwt.decode(link_token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except JWTError:
+        raise HTTPException(401, "steam_link_invalid")
+    if payload.get("kind") != "steam_link":
+        raise HTTPException(401, "steam_link_invalid")
+    user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0})
+    if not user:
+        raise HTTPException(401, "steam_link_invalid")
+    return user
+
+
+async def _load_steam_merge_token(merge_token: str, expected_user_id: Optional[str] = None) -> dict:
+    try:
+        payload = jwt.decode(merge_token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except JWTError:
+        raise HTTPException(401, "steam_merge_invalid")
+    if payload.get("kind") != "steam_merge":
+        raise HTTPException(401, "steam_merge_invalid")
+    if expected_user_id and payload.get("sub") != expected_user_id:
+        raise HTTPException(403, "steam_merge_forbidden")
+    return payload
+
+
+def _progression_score(doc: dict) -> float:
+    return (
+        float(doc.get("level") or 0) * 100000
+        + float(doc.get("xp") or 0) * 10
+        + float(doc.get("platform_elo", doc.get("elo", 0)) or 0) * 25
+        + float(doc.get("faceit_elo") or 0) * 15
+        + float(doc.get("premier_rating") or 0) * 2
+        + float(doc.get("tokens") or 0)
+        + (float(doc.get("kdr") or 0) * 1000)
+    )
+
+
+def _select_progression_candidate(users: list[dict]) -> dict:
+    return sorted(
+        users,
+        key=lambda doc: (_progression_score(doc), _parse_iso_or_min(doc.get("created_at"))),
+        reverse=True,
+    )[0]
+
+
+def _steam_merge_preview_summary(doc: dict) -> dict:
+    return {
+        "id": doc["id"],
+        "pseudo": doc.get("pseudo"),
+        "email": doc.get("email"),
+        "created_at": doc.get("created_at"),
+        "country": doc.get("country"),
+        "level": int(doc.get("level", 1) or 1),
+        "xp": int(doc.get("xp", 0) or 0),
+        "platform_elo": int(doc.get("platform_elo", doc.get("elo", 1000)) or 1000),
+        "faceit_elo": doc.get("faceit_elo"),
+        "premier_rating": doc.get("premier_rating"),
+        "kdr": _compute_kdr(doc),
+        "tokens": int(doc.get("tokens", 0) or 0),
+        "rank_cs2": doc.get("rank_cs2"),
+        "role": doc.get("role"),
+        "team_id": doc.get("team_id"),
+        "team_role": doc.get("team_role"),
+        "avatar_url": doc.get("custom_avatar_url") or doc.get("steam_avatar_url"),
+        "steam_verified": bool(doc.get("steam_verified")),
+        "stats_last_sync_at": doc.get("stats_last_sync_at"),
+        "progression_score": round(_progression_score(doc), 2),
+    }
+
+
+def _select_primary_steam_user(users: list[dict]) -> dict:
+    return sorted(
+        users,
+        key=lambda doc: (
+            0 if not _looks_placeholder_email(doc.get("email")) else 1,
+            0 if not _looks_placeholder_pseudo(doc.get("pseudo")) else 1,
+            _parse_iso_or_min(doc.get("created_at")),
+        ),
+    )[0]
+
+
+async def _dedupe_contest_entries_for_user(user_id: str):
+    entries = await db.contest_entries.find({"user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    seen: set[str] = set()
+    for entry in entries:
+        contest_id = entry.get("contest_id")
+        if not contest_id:
+            continue
+        if contest_id in seen:
+            await db.contest_entries.delete_one({"id": entry["id"]})
+            continue
+        seen.add(contest_id)
+
+
+async def _dedupe_tournament_registrations_for_user(user_id: str):
+    regs = await db.tournament_registrations.find({"user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    grouped: dict[str, list[dict]] = {}
+    for reg in regs:
+        grouped.setdefault(reg.get("tournament_id") or "", []).append(reg)
+
+    for tournament_id, items in grouped.items():
+        if not tournament_id or len(items) < 2:
+            continue
+        keep = sorted(items, key=lambda reg: (0 if reg.get("entity_type") == "team" else 1, reg.get("created_at") or ""))[0]
+        for reg in items:
+            if reg["id"] == keep["id"]:
+                continue
+            await db.tournament_registrations.delete_one({"id": reg["id"]})
+
+
+async def _dedupe_team_applications_for_user(user_id: str):
+    apps = await db.team_applications.find({"user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    grouped: dict[str, list[dict]] = {}
+    for app in apps:
+        grouped.setdefault(app.get("team_id") or "", []).append(app)
+
+    priority = {"approved": 0, "pending": 1, "rejected": 2}
+    for team_id, items in grouped.items():
+        if not team_id or len(items) < 2:
+            continue
+        keep = sorted(items, key=lambda app: (priority.get(app.get("status"), 9), app.get("created_at") or ""))[0]
+        for app in items:
+            if app["id"] == keep["id"]:
+                continue
+            await db.team_applications.delete_one({"id": app["id"]})
+
+
+async def _merge_user_accounts(primary: dict, secondary: dict, reason: str, strategy: str = "smart") -> dict:
+    if not secondary or primary["id"] == secondary["id"]:
+        return primary
+
+    stats_doc = _steam_stats_preferred_doc(primary, secondary)
+    fallback_doc = secondary if stats_doc["id"] == primary["id"] else primary
+    stats_fields = set(SYNC_MANAGED_FIELDS) | {
+        "steam_avatar_url",
+        "rank_cs2",
+        "faceit_level",
+        "faceit_recent_matches",
+        "faceit_winrate",
+        "faceit_headshots",
+        "faceit_total_matches",
+        "faceit_kills_per_round",
+        "aim_rating",
+        "utility_rating",
+        "positioning_rating",
+        "opening_duels_rating",
+        "clutching_rating",
+    }
+    progression_fields = ("level", "xp", "elo", "platform_elo", "reliability", "tokens")
+    final_steam_id = (primary.get("steam_id") or secondary.get("steam_id") or "").strip() or None
+    updates = {
+        "steam_id": final_steam_id,
+        "steam_verified": bool(primary.get("steam_verified") or secondary.get("steam_verified") or final_steam_id),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if _looks_placeholder_email(primary.get("email")) and not _looks_placeholder_email(secondary.get("email")):
+        replacement_email = secondary.get("email", "").strip().lower()
+        existing = await db.users.find_one(
+            {"email": replacement_email, "id": {"$nin": [primary["id"], secondary["id"]]}},
+            {"_id": 0, "id": 1},
+        )
+        if replacement_email and not existing:
+            updates["email"] = replacement_email
+
+    if _looks_placeholder_pseudo(primary.get("pseudo")) and not _looks_placeholder_pseudo(secondary.get("pseudo")):
+        updates["pseudo"] = await _resolve_available_pseudo(secondary.get("pseudo"), primary["id"], (final_steam_id or primary["id"])[-4:])
+
+    if not _meaningful_text(primary.get("country"), {"??"}) and _meaningful_text(secondary.get("country"), {"??"}):
+        updates["country"] = secondary.get("country")
+
+    for field in ("gender", "age", "bio", "custom_avatar_url", "steam_profile_url", "faceit_profile_url", "leetify_profile_url", "stats_profile_url", "role"):
+        primary_value = primary.get(field)
+        secondary_value = secondary.get(field)
+        if primary_value in (None, "", []) and secondary_value not in (None, "", []):
+            updates[field] = secondary_value
+
+    if not primary.get("custom_avatar_url") and secondary.get("custom_avatar_url"):
+        updates["custom_avatar_url"] = secondary.get("custom_avatar_url")
+    if not primary.get("steam_avatar_url") and secondary.get("steam_avatar_url"):
+        updates["steam_avatar_url"] = secondary.get("steam_avatar_url")
+
+    if strategy == "keep_other_progression":
+        for field in progression_fields:
+            secondary_value = secondary.get(field)
+            if secondary_value not in (None, "", []):
+                updates[field] = secondary_value
+        for field in stats_fields:
+            secondary_value = secondary.get(field)
+            if secondary_value not in (None, "", []):
+                updates[field] = secondary_value
+    elif strategy == "keep_current":
+        for field in stats_fields:
+            if field in updates:
+                continue
+            primary_value = primary.get(field)
+            if primary_value not in (None, "", []):
+                updates[field] = primary_value
+    else:
+        for numeric_field in ("level", "xp", "elo", "platform_elo", "reliability"):
+            primary_value = primary.get(numeric_field)
+            secondary_value = secondary.get(numeric_field)
+            values = [value for value in (primary_value, secondary_value) if isinstance(value, (int, float))]
+            if values:
+                updates[numeric_field] = int(max(values))
+
+        token_values = [value for value in (primary.get("tokens"), secondary.get("tokens")) if isinstance(value, int)]
+        if token_values:
+            updates["tokens"] = sum(token_values)
+
+        for field in stats_fields:
+            preferred_value = stats_doc.get(field)
+            fallback_value = fallback_doc.get(field)
+            if preferred_value not in (None, "", []):
+                updates[field] = preferred_value
+            elif field not in updates and fallback_value not in (None, "", []):
+                updates[field] = fallback_value
+
+    primary_team_id = primary.get("team_id")
+    secondary_team_id = secondary.get("team_id")
+    if not primary_team_id and secondary_team_id:
+        updates["team_id"] = secondary_team_id
+        updates["team_role"] = secondary.get("team_role")
+        if secondary.get("team_role") == "captain":
+            await db.teams.update_one({"captain_user_id": secondary["id"]}, {"$set": {"captain_user_id": primary["id"]}})
+    elif primary_team_id and secondary_team_id and primary_team_id == secondary_team_id:
+        if primary.get("team_role") != "captain" and secondary.get("team_role") == "captain":
+            updates["team_role"] = "captain"
+            await db.teams.update_one({"captain_user_id": secondary["id"]}, {"$set": {"captain_user_id": primary["id"]}})
+
+    if _parse_iso_or_min(secondary.get("created_at")) < _parse_iso_or_min(primary.get("created_at")):
+        updates["created_at"] = secondary.get("created_at")
+
+    await db.users.update_one({"id": primary["id"]}, {"$set": updates})
+    merged = await db.users.find_one({"id": primary["id"]}, {"_id": 0}) or {**primary, **updates}
+    final_pseudo = merged.get("pseudo") or updates.get("pseudo") or primary.get("pseudo")
+
+    await db.audit_logs.update_many({"user_id": secondary["id"]}, {"$set": {"user_id": primary["id"]}})
+    await db.password_resets.update_many({"user_id": secondary["id"]}, {"$set": {"user_id": primary["id"]}})
+    await db.team_applications.update_many({"user_id": secondary["id"]}, {"$set": {"user_id": primary["id"], "pseudo": final_pseudo}})
+    await db.contest_entries.update_many({"user_id": secondary["id"]}, {"$set": {"user_id": primary["id"]}})
+    await db.reward_redemptions.update_many({"user_id": secondary["id"]}, {"$set": {"user_id": primary["id"], "pseudo": final_pseudo}})
+    await db.tournament_registrations.update_many({"user_id": secondary["id"]}, {"$set": {"user_id": primary["id"]}})
+    await db.tournament_registrations.update_many(
+        {"user_id": primary["id"], "entity_type": "solo"},
+        {"$set": {"entity_name": final_pseudo}},
+    )
+    await db.match_reports.update_many(
+        {"reporter_user_id": secondary["id"]},
+        {"$set": {"reporter_user_id": primary["id"], "reporter_pseudo": final_pseudo}},
+    )
+    await db.cards.update_many(
+        {"target_user_id": secondary["id"]},
+        {"$set": {"target_user_id": primary["id"], "target_pseudo": final_pseudo}},
+    )
+    await db.cards.update_many(
+        {"issuer_user_id": secondary["id"]},
+        {"$set": {"issuer_user_id": primary["id"], "issuer_pseudo": final_pseudo}},
+    )
+    await db.duels.update_many(
+        {"creator_id": secondary["id"]},
+        {"$set": {"creator_id": primary["id"], "creator_pseudo": final_pseudo}},
+    )
+    await db.duels.update_many(
+        {"opponent_id": secondary["id"]},
+        {"$set": {"opponent_id": primary["id"], "opponent_pseudo": final_pseudo}},
+    )
+    await db.duels.update_many({"winner_id": secondary["id"]}, {"$set": {"winner_id": primary["id"]}})
+
+    await _dedupe_contest_entries_for_user(primary["id"])
+    await _dedupe_tournament_registrations_for_user(primary["id"])
+    await _dedupe_team_applications_for_user(primary["id"])
+
+    await db.users.delete_one({"id": secondary["id"]})
+    await journal(
+        "accounts_merged",
+        primary["id"],
+        {"from_user_id": secondary["id"], "steam_id": final_steam_id, "reason": reason},
+    )
+    return merged
+
+
+async def _resolve_steam_user(steam_id: str, request: Request, link_token: Optional[str] = None) -> dict:
+    linked_user = await _load_user_from_steam_link_token(link_token)
+    steam_users = await db.users.find({"steam_id": steam_id}, {"_id": 0}).to_list(20)
+
+    if linked_user and linked_user.get("steam_id") and linked_user.get("steam_id") != steam_id:
+        raise HTTPException(409, "steam_link_conflict")
+
+    if linked_user:
+        duplicates = [doc for doc in steam_users if doc["id"] != linked_user["id"]]
+        if duplicates:
+            merge_candidate = _select_progression_candidate(duplicates)
+            raise SteamMergeRequired(make_steam_merge_token(linked_user["id"], merge_candidate["id"], steam_id))
+        if not any(doc["id"] == linked_user["id"] for doc in steam_users):
+            await db.users.update_one(
+                {"id": linked_user["id"]},
+                {"$set": {"steam_id": steam_id, "steam_verified": True, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            linked_user = await db.users.find_one({"id": linked_user["id"]}, {"_id": 0})
+        return linked_user
+
+    if steam_users:
+        primary = _select_primary_steam_user(steam_users)
+        for duplicate in steam_users:
+            if duplicate["id"] == primary["id"]:
+                continue
+            primary = await _merge_user_accounts(primary, duplicate, "steam_duplicate_cleanup")
+        if not primary.get("steam_verified"):
+            await db.users.update_one(
+                {"id": primary["id"]},
+                {"$set": {"steam_verified": True, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            primary = await db.users.find_one({"id": primary["id"]}, {"_id": 0}) or {**primary, "steam_verified": True}
+        return primary
+
+    user = _build_steam_user_doc(steam_id, request)
+    await db.users.insert_one(user)
+    await journal("steam_profile_created", user["id"], {"steam_id": steam_id})
+    return user
+
+
+async def _bootstrap_steam_profile(user: dict) -> dict:
+    steam_id = (user.get("steam_id") or "").strip()
+    if not steam_id or not steam_id.isdigit():
+        return user
+
+    try:
+        updates = await _fetch_external_stats_for_steam_id(steam_id)
+    except Exception as exc:
+        logger.warning("steam bootstrap sync failed for steam_id=%s: %s", steam_id, exc)
+        return user
+
+    steam_display_name = updates.pop("_steam_display_name", None)
+    current_pseudo = str(user.get("pseudo") or "").strip()
+    if steam_display_name and (not current_pseudo or current_pseudo.startswith("Steam_")):
+        updates["pseudo"] = await _resolve_available_pseudo(steam_display_name, user["id"], steam_id[-4:])
+
+    updates["steam_verified"] = True
+    updates["stats_last_sync_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": user["id"]}, {"$set": updates})
+    refreshed = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    return refreshed or {**user, **updates}
 
 
 class TournamentAdminReq(BaseModel):
@@ -1870,18 +2456,79 @@ def _backend_base(request: Request) -> str:
 def _frontend_base() -> str:
     return env_text("FRONTEND_URL", DEFAULT_FRONTEND_URL).rstrip("/")
 
-@api_router.get("/auth/steam/login")
-async def steam_login_real(request: Request):
-    backend = _backend_base(request)
+def _steam_openid_redirect_url(backend: str, link_token: Optional[str] = None) -> str:
+    callback_url = f"{backend}/api/auth/steam/callback"
+    if link_token:
+        callback_url = f"{callback_url}?{urlencode({'link_token': link_token})}"
     params = {
         "openid.ns": "http://specs.openid.net/auth/2.0",
         "openid.mode": "checkid_setup",
-        "openid.return_to": f"{backend}/api/auth/steam/callback",
+        "openid.return_to": callback_url,
         "openid.realm": backend,
         "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
         "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
     }
-    return RedirectResponse(url=f"{STEAM_OPENID_URL}?{urlencode(params)}", status_code=302)
+    return f"{STEAM_OPENID_URL}?{urlencode(params)}"
+
+
+@api_router.get("/auth/steam/login")
+async def steam_login_real(request: Request):
+    backend = _backend_base(request)
+    return RedirectResponse(url=_steam_openid_redirect_url(backend), status_code=302)
+
+
+@api_router.post("/auth/steam/link-session")
+async def create_steam_link_session(request: Request, user=Depends(get_current_user)):
+    backend = _backend_base(request)
+    link_token = make_steam_link_token(user["id"])
+    return {"url": _steam_openid_redirect_url(backend, link_token)}
+
+
+@api_router.get("/auth/steam/merge-preview")
+async def get_steam_merge_preview(token: str, user=Depends(get_current_user)):
+    payload = await _load_steam_merge_token(token, user["id"])
+    other_user = await db.users.find_one({"id": payload.get("other_user_id")}, {"_id": 0})
+    current_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    if not current_user or not other_user:
+        raise HTTPException(404, "steam_merge_missing")
+    return {
+        "steam_id": payload.get("steam_id"),
+        "current_account": _steam_merge_preview_summary(current_user),
+        "other_account": _steam_merge_preview_summary(other_user),
+        "choices": {
+            "keep_current": "Garder ma progression actuelle",
+            "keep_other_progression": "Ecraser ma progression actuelle par celle de l'autre compte",
+        },
+    }
+
+
+@api_router.post("/auth/steam/merge-confirm", response_model=UserPublic)
+async def confirm_steam_merge(req: SteamMergeConfirmReq, user=Depends(get_current_user)):
+    payload = await _load_steam_merge_token(req.token, user["id"])
+    current_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    other_user = await db.users.find_one({"id": payload.get("other_user_id")}, {"_id": 0})
+    if not current_user or not other_user:
+        raise HTTPException(404, "steam_merge_missing")
+
+    strategy = req.strategy
+    reason = f"steam_confirmed_{strategy}"
+    merged = await _merge_user_accounts(current_user, other_user, reason, strategy)
+
+    duplicates = await db.users.find(
+        {"steam_id": payload.get("steam_id"), "id": {"$ne": merged["id"]}},
+        {"_id": 0},
+    ).to_list(20)
+    primary = merged
+    for duplicate in duplicates:
+        primary = await _merge_user_accounts(primary, duplicate, "steam_confirmed_cleanup", "keep_current")
+
+    await db.users.update_one(
+        {"id": primary["id"]},
+        {"$set": {"steam_id": payload.get("steam_id"), "steam_verified": True, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    refreshed = await db.users.find_one({"id": primary["id"]}, {"_id": 0})
+    refreshed = await _bootstrap_steam_profile(refreshed or primary)
+    return user_to_public(refreshed)
 
 @api_router.get("/auth/steam/callback")
 async def steam_callback(request: Request):
@@ -1900,28 +2547,14 @@ async def steam_callback(request: Request):
     steam_id = claimed.rsplit("/", 1)[-1] if claimed else None
     if not steam_id or not steam_id.isdigit():
         return RedirectResponse(url=f"{_frontend_base()}/login?steam_error=no_id", status_code=302)
-    # Step 3: link to existing user (via session) or create a "steam-only" user
-    existing = await db.users.find_one({"steam_id": steam_id})
-    if existing:
-        user = existing
-    else:
-        # Create lightweight Steam-only account
-        user = {
-            "id": str(uuid.uuid4()), "pseudo": f"Steam_{steam_id[-6:]}",
-            "email": f"steam_{steam_id}@readyup.local",
-            "password_hash": hash_password(uuid.uuid4().hex), "country": "??",
-            "gender": None, "age": None, "bio": None,
-            "custom_avatar_url": None, "steam_avatar_url": None,
-            "level": 1, "xp": 0, "elo": 1000, "platform_elo": 1000,
-            "faceit_elo": None, "premier_rating": None, "premier_status": None,
-            "kills_30d": None, "deaths_30d": None, "kdr": None,
-            "rank_cs2": None, "role": "Polyvalent", "reliability": 55,
-            "stats_last_sync_at": None,
-            "steam_verified": True, "steam_id": steam_id,
-            "team_id": None, "team_role": None,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        await db.users.insert_one(user)
+    try:
+        user = await _resolve_steam_user(steam_id, request, qp.get("link_token"))
+    except SteamMergeRequired as exc:
+        return RedirectResponse(url=f"{_frontend_base()}/profile?steam_merge_token={exc.merge_token}", status_code=302)
+    except HTTPException as exc:
+        error_target = "profile" if qp.get("link_token") else "login"
+        return RedirectResponse(url=f"{_frontend_base()}/{error_target}?steam_error={exc.detail}", status_code=302)
+    user = await _bootstrap_steam_profile(user)
     await journal("steam_login", user["id"], {"steam_id": steam_id})
     token = make_token(user["id"], user["pseudo"])
     return RedirectResponse(url=f"{_frontend_base()}/auth/steam/complete?token={token}&steamId={steam_id}", status_code=302)
@@ -2179,7 +2812,10 @@ async def match_detail(matchid: str):
     latest: dict = {}
     for e in events:
         _merge_latest(latest, _extract_score(e.get("payload") or {}))
-    server = await db.cs2_servers.find_one({"current_match_id": str(matchid)}, {"_id": 0, "rcon_password": 0})
+    server = await db.cs2_servers.find_one(
+        {"$or": [{"current_match_id": str(matchid)}, {"last_match_id": str(matchid)}]},
+        {"_id": 0, "rcon_password": 0},
+    )
     return {
         "matchid": str(matchid),
         "summary": latest,

@@ -1,0 +1,8 @@
+// Upload this file to your server, for example:
+//   cfg/custom/readyup_matchzy_remote.cfg
+// Then execute it before loading a match:
+//   exec custom/readyup_matchzy_remote.cfg
+
+matchzy_remote_log_url "https://your-api-domain/api/cs2/webhooks/matchzy"
+matchzy_remote_log_auth_key "Authorization"
+matchzy_remote_log_auth_value "Bearer YOUR_MATCHZY_WEBHOOK_SECRET"

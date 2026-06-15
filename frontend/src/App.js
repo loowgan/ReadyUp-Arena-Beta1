@@ -19,7 +19,7 @@ const NavBar = () => {
   const links = [
     { to: "/", label: "Accueil" }, { to: "/tournaments", label: "Tournois" },
     { to: "/teams", label: "Équipes" }, { to: "/rankings", label: "Classements" },
-    { to: "/duels", label: "Duels 1v1" }, { to: "/cs2", label: "CS2" },
+    { to: "/duels", label: "Duels 1v1" }, { to: "/boutique", label: "Boutique" }, { to: "/cs2", label: "CS2" },
     { to: "/live", label: "En direct" }, { to: "/admin", label: "Admin" },
   ];
   return (
@@ -884,6 +884,9 @@ const BracketSection = ({ tid }) => {
   const authH = { Authorization: `Bearer ${token}` };
   const [bracket, setBracket] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [servers, setServers] = useState([]);
+  const [serverByMatch, setServerByMatch] = useState({});
+  const [launchingMatchId, setLaunchingMatchId] = useState(null);
   const load = async () => {
     try {
       const r = await axios.get(`${API}/tournaments/${tid}/bracket`);
@@ -895,12 +898,49 @@ const BracketSection = ({ tid }) => {
   useEffect(() => {
     axios.get(`${API}/tournaments/${tid}/bracket`).then(r => setBracket(r.data)).catch(() => setBracket(null));
   }, [tid]);
+  useEffect(() => {
+    if (!isAdmin) return;
+    axios.get(`${API}/cs2/servers`).then((r) => setServers(r.data)).catch(() => setServers([]));
+  }, [isAdmin, tid]);
+  useEffect(() => {
+    if (!bracket || !servers.length) return;
+    setServerByMatch((prev) => {
+      const next = { ...prev };
+      ["W", "L", "GF"].forEach((group) => {
+        (bracket.matches[group] || []).forEach((match) => {
+          if (!next[match.id]) {
+            next[match.id] =
+              match.server_id ||
+              (servers.find((server) => !server.current_match_id || server.current_match_id === match.id) || servers[0])?.id ||
+              "";
+          }
+        });
+      });
+      return next;
+    });
+  }, [bracket, servers]);
   const gen = async (type) => { setBusy(true);
     try { await axios.post(`${API}/tournaments/${tid}/bracket/generate`, { type }, { headers: authH }); await load(); }
     catch (e) { alert(e.response?.data?.detail || "Erreur"); } finally { setBusy(false); } };
   const report = async (mid, winner_id) => {
     try { const r = await axios.post(`${API}/tournaments/${tid}/bracket/match/${mid}/result`, { winner_id, expected_version: bracket?.version }, { headers: authH }); setBracket(r.data); }
     catch (e) { if (e.response?.status === 409) { await load(); } alert(e.response?.data?.detail || "Erreur"); } };
+  const launchMatch = async (mid) => {
+    const server_id = serverByMatch[mid];
+    if (!server_id) {
+      alert("Choisissez un serveur CS2.");
+      return;
+    }
+    setLaunchingMatchId(mid);
+    try {
+      await axios.post(`${API}/cs2/tournaments/${tid}/bracket-matches/${mid}/launch`, { server_id }, { headers: authH });
+      await load();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Lancement MatchZy impossible");
+    } finally {
+      setLaunchingMatchId(null);
+    }
+  };
 
   const groupLabel = { W: "Bracket principal", L: "Bracket des perdants", GF: "Grande finale" };
   const renderGroup = (g) => {
@@ -928,6 +968,49 @@ const BracketSection = ({ tid }) => {
                       </div>
                     );
                   })}
+                  {(m.server_name || (isAdmin && m.a && m.b)) && (
+                    <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
+                      {m.server_name && (
+                        <div className="text-[11px] text-white/50 uppercase tracking-widest">
+                          Serveur: <span className="text-white/80">{m.server_name}</span>
+                          {m.launch_status && <span className="text-white/40"> • {m.launch_status}</span>}
+                        </div>
+                      )}
+                      {m.series_score && (
+                        <div className="text-xs text-white/50">
+                          Serie: {m.series_score.team1 ?? 0} - {m.series_score.team2 ?? 0}
+                        </div>
+                      )}
+                      {isAdmin && m.a && m.b && !m.winner_id && (
+                        <>
+                          <select
+                            value={serverByMatch[m.id] || ""}
+                            onChange={(event) => setServerByMatch({ ...serverByMatch, [m.id]: event.target.value })}
+                            className="w-full"
+                            data-testid={`launch-server-select-${m.id}`}
+                          >
+                            <option value="">Choisir un serveur</option>
+                            {servers.map((server) => (
+                              <option key={server.id} value={server.id}>
+                                {server.name} ({server.status || "unknown"})
+                              </option>
+                            ))}
+                          </select>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => launchMatch(m.id)}
+                              disabled={launchingMatchId === m.id}
+                              className="btn-neon text-xs"
+                              data-testid={`launch-match-${m.id}`}
+                            >
+                              <Server size={12}/>{launchingMatchId === m.id ? "Lancement..." : "Lancer sur serveur"}
+                            </button>
+                            {m.launch_status && <Link to={`/match/${m.id}`} className="btn-ghost text-xs"><Radio size={12}/>Suivi match</Link>}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1367,9 +1450,14 @@ const MatchRoom = () => {
 /* ============== PROFILE ============== */
 const Profile = () => {
   const { user: currentUser, token, setUser } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
   const [syncError, setSyncError] = useState("");
+  const [mergePreview, setMergePreview] = useState(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeError, setMergeError] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
   const [profileError, setProfileError] = useState("");
@@ -1479,6 +1567,7 @@ const Profile = () => {
   const p = currentUser
     ? { ...emptyProfile, ...currentUser, xp_next: Math.max((currentUser.xp || 0) + 500, 1000) }
     : demoProfile;
+  const mergeToken = new URLSearchParams(location.search).get("steam_merge_token");
   const xpPct = (p.xp / p.xp_next) * 100;
   useEffect(() => {
     if (!currentUser) return;
@@ -1491,7 +1580,94 @@ const Profile = () => {
       custom_avatar_url: currentUser.custom_avatar_url || "",
     });
   }, [currentUser]);
-  const handleSteamLink = () => { window.location.href = `${API}/auth/steam/login`; };
+  useEffect(() => {
+    const steamError = new URLSearchParams(location.search).get("steam_error");
+    if (!steamError) return;
+    if (steamError === "steam_link_invalid") {
+      setSyncError("La liaison Steam a expire. Relancez depuis votre profil.");
+      return;
+    }
+    if (steamError === "steam_link_conflict") {
+      setSyncError("Ce compte est deja lie a un autre profil Steam.");
+      return;
+    }
+    setSyncError("Connexion Steam impossible pour le moment.");
+  }, [location.search]);
+  useEffect(() => {
+    if (!mergeToken || !token) {
+      setMergePreview(null);
+      return;
+    }
+    let cancelled = false;
+    setMergeBusy(true);
+    setMergeError("");
+    axios
+      .get(`${API}/auth/steam/merge-preview`, {
+        params: { token: mergeToken },
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      .then((response) => {
+        if (!cancelled) {
+          setMergePreview(response.data);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setMergePreview(null);
+          setMergeError(err?.response?.data?.detail || "Fusion Steam introuvable ou expiree.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setMergeBusy(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mergeToken, token]);
+  const handleSteamLink = async () => {
+    if (!token) {
+      window.location.href = `${API}/auth/steam/login`;
+      return;
+    }
+    try {
+      const response = await axios.post(`${API}/auth/steam/link-session`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      window.location.href = response.data.url;
+    } catch (err) {
+      setSyncError(err?.response?.data?.detail || "Lien Steam impossible pour le moment.");
+    }
+  };
+  const dismissSteamMerge = () => {
+    setMergePreview(null);
+    setMergeError("");
+    navigate("/profile", { replace: true });
+  };
+  const confirmSteamMerge = async (strategy) => {
+    if (!token || !mergeToken) return;
+    setMergeBusy(true);
+    setMergeError("");
+    try {
+      const response = await axios.post(
+        `${API}/auth/steam/merge-confirm`,
+        { token: mergeToken, strategy },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      setUser(response.data);
+      setMergePreview(null);
+      setSyncError("");
+      setSyncMessage(
+        strategy === "keep_other_progression"
+          ? "Compte Steam lie. La progression de l'autre compte a remplace la progression actuelle."
+          : "Compte Steam lie. Votre progression actuelle a ete conservee."
+      );
+      navigate("/profile", { replace: true });
+    } catch (err) {
+      setMergeError(err?.response?.data?.detail || "Validation de la fusion impossible.");
+    } finally {
+      setMergeBusy(false);
+    }
+  };
   const saveProfile = async (event) => {
     event.preventDefault();
     if (!token) {
@@ -1576,6 +1752,74 @@ const Profile = () => {
   ].filter((item) => item.href);
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="profile-page">
+      {mergeToken && (
+        <div className="glass p-6 border border-orange-500/30 mb-6" data-testid="steam-merge-prompt">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Fusion Steam</div>
+              <h2 className="font-display text-2xl uppercase mt-2">Choisissez la progression a garder</h2>
+              <p className="text-white/60 mt-2">
+                Un autre compte avec le meme Steam ID a ete detecte. Le compte connecte restera le compte principal,
+                mais vous pouvez garder votre progression actuelle ou ecraser cette progression avec celle de l'autre compte.
+              </p>
+            </div>
+            <button onClick={dismissSteamMerge} className="btn-ghost text-xs">Plus tard</button>
+          </div>
+          {mergeError && <div className="text-sm text-red-400 mt-4">{mergeError}</div>}
+          {mergeBusy && !mergePreview && <div className="text-sm text-white/50 mt-4">Chargement de la comparaison...</div>}
+          {mergePreview && (
+            <>
+              <div className="grid lg:grid-cols-2 gap-4 mt-5">
+                {[
+                  { key: "current_account", title: "Compte actuel", accent: "text-cyan-neon" },
+                  { key: "other_account", title: "Autre compte Steam", accent: "text-yellow-neon" },
+                ].map((entry) => {
+                  const account = mergePreview[entry.key];
+                  return (
+                    <div key={entry.key} className="border border-white/10 p-4 bg-black/20">
+                      <div className={`font-display text-lg uppercase ${entry.accent}`}>{entry.title}</div>
+                      <div className="text-white mt-3">{account.pseudo}</div>
+                      <div className="text-xs text-white/40 mt-1">{account.email}</div>
+                      <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+                        <div><div className="text-white/40 text-xs uppercase tracking-widest">Niveau</div><div className="font-display mt-1">{account.level}</div></div>
+                        <div><div className="text-white/40 text-xs uppercase tracking-widest">XP</div><div className="font-display mt-1">{account.xp}</div></div>
+                        <div><div className="text-white/40 text-xs uppercase tracking-widest">ELO</div><div className="font-display mt-1">{account.platform_elo}</div></div>
+                        <div><div className="text-white/40 text-xs uppercase tracking-widest">Jetons</div><div className="font-display mt-1">{account.tokens}</div></div>
+                        <div><div className="text-white/40 text-xs uppercase tracking-widest">FACEIT</div><div className="font-display mt-1">{account.faceit_elo ?? "—"}</div></div>
+                        <div><div className="text-white/40 text-xs uppercase tracking-widest">Premier</div><div className="font-display mt-1">{account.premier_rating ?? "—"}</div></div>
+                        <div><div className="text-white/40 text-xs uppercase tracking-widest">K/D</div><div className="font-display mt-1">{account.kdr ?? "—"}</div></div>
+                        <div><div className="text-white/40 text-xs uppercase tracking-widest">Rang</div><div className="font-display mt-1">{account.rank_cs2 || "—"}</div></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-xs text-white/45 mt-4">
+                "Garder ma progression actuelle" conserve votre niveau, XP, ELO, jetons et stats actuels.
+                "Ecraser par l'autre compte" remplace cette progression par celle de l'autre compte detecte, tout en gardant ce profil comme compte principal.
+              </div>
+              <div className="flex flex-wrap gap-3 mt-5">
+                <button
+                  onClick={() => confirmSteamMerge("keep_current")}
+                  disabled={mergeBusy}
+                  className="btn-neon disabled:opacity-60"
+                  data-testid="steam-merge-keep-current-btn"
+                >
+                  <Shield size={14}/>Garder ma progression actuelle
+                </button>
+                <button
+                  onClick={() => confirmSteamMerge("keep_other_progression")}
+                  disabled={mergeBusy}
+                  className="btn-ghost disabled:opacity-60"
+                  data-testid="steam-merge-keep-other-btn"
+                >
+                  <RefreshCw size={14}/>Ecraser par l'autre progression
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       <div className="glass p-8 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-96 h-96 bg-orange-500/10 blur-3xl"/>
         <div className="flex items-center gap-6 relative">
@@ -2510,7 +2754,7 @@ const Cs2Hub = () => {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="font-display text-2xl uppercase">{server.name}</div>
-                <div className="text-xs uppercase tracking-widest text-white/40 mt-1">{server.host}:{server.port}</div>
+                <div className="text-xs uppercase tracking-widest text-white/40 mt-1">{server.provider || "custom"} • {(server.public_host || server.host)}:{server.game_port || server.port}</div>
               </div>
               <Badge variant={["online", "live"].includes(server.status) ? "verified" : "soon"}>{server.status || "unknown"}</Badge>
             </div>
@@ -2523,6 +2767,16 @@ const Cs2Hub = () => {
                 <div className="text-xs uppercase tracking-widest text-white/40">Dernier check</div>
                 <div className="mt-2 text-white/80">{server.last_checked_at ? new Date(server.last_checked_at).toLocaleString("fr-FR") : "Pas encore"}</div>
               </div>
+            </div>
+            <div className="flex flex-wrap gap-2 mt-4 text-[10px] uppercase tracking-widest text-white/50">
+              {server.capabilities?.matchzy && <span className="border border-white/10 px-2 py-1">MatchZy</span>}
+              {server.capabilities?.cssimpleadmin && <span className="border border-white/10 px-2 py-1">CSsimpleadmin</span>}
+              {server.capabilities?.fake_rcon && <span className="border border-white/10 px-2 py-1">Fake RCON</span>}
+              {server.capabilities?.hltv && <span className="border border-white/10 px-2 py-1">HLTV</span>}
+            </div>
+            <div className="flex flex-wrap gap-2 mt-4">
+              {server.connect_url && <a href={server.connect_url} className="btn-ghost text-xs"><ExternalLink size={12}/>Connexion</a>}
+              {server.hltv_url && <a href={server.hltv_url} className="btn-ghost text-xs"><Tv size={12}/>Spectateur</a>}
             </div>
           </div>
         ))}
@@ -2891,9 +3145,14 @@ const Cs2Panel = () => {
   const { token, user } = useAuth();
   const isAdmin = user?.is_admin;
   const authH = token ? { Authorization: `Bearer ${token}` } : {};
+  const emptyServerForm = {
+    name: "", host: "", port: 27015, control_mode: "bridge", rcon_password: "", bridge_token: "",
+    provider: "FShost.me", region: "EU-FR", public_host: "", game_port: 27015, gotv_port: "",
+    matchzy_enabled: true, cssimpleadmin_enabled: true, fake_rcon_enabled: true, hltv_enabled: true,
+  };
   const [servers, setServers] = useState([]);
   const [events, setEvents] = useState([]);
-  const [form, setForm] = useState({ name:"", host:"", port:27015, rcon_password:"" });
+  const [form, setForm] = useState(emptyServerForm);
   const [selected, setSelected] = useState(null);
   const [cmd, setCmd] = useState("status");
   const [output, setOutput] = useState("");
@@ -2907,33 +3166,89 @@ const Cs2Panel = () => {
 
   const addServer = async (e) => {
     e.preventDefault(); setBusy(true);
-    try { await axios.post(`${API}/cs2/servers`, { ...form, port: parseInt(form.port) }, { headers: authH });
-      setForm({ name:"", host:"", port:27015, rcon_password:"" }); await refresh(); }
+    try {
+      const payload = {
+        ...form,
+        port: parseInt(form.port, 10),
+        game_port: form.game_port ? parseInt(form.game_port, 10) : undefined,
+        gotv_port: form.gotv_port ? parseInt(form.gotv_port, 10) : undefined,
+      };
+      if (form.control_mode === "bridge") {
+        payload.rcon_password = undefined;
+      } else {
+        payload.bridge_token = undefined;
+      }
+      await axios.post(`${API}/cs2/servers`, payload, { headers: authH });
+      setForm(emptyServerForm); await refresh();
+    }
     catch (e2) { alert(e2.response?.data?.detail || "Erreur"); } finally { setBusy(false); }
   };
   const del = async (id) => { if (!window.confirm("Supprimer ce serveur ?")) return;
     try { await axios.delete(`${API}/cs2/servers/${id}`, { headers: authH }); if (selected===id) setSelected(null); await refresh(); }
     catch (e) { alert(e.response?.data?.detail || "Erreur"); } };
   const ping = async (id) => { setBusy(true); setSelected(id); setOutput("Connexion RCON…");
-    try { const r = await axios.post(`${API}/cs2/servers/${id}/ping`, {}, { headers: authH }); setOutput(r.data.output); await refresh(); }
+    try {
+      const r = await axios.post(`${API}/cs2/servers/${id}/ping`, {}, { headers: authH });
+      const prefix = r.data.queued ? `Commande envoyee au bridge (${r.data.command_id})\n\n` : "";
+      setOutput(`${prefix}${r.data.output || ""}`.trim());
+      await refresh();
+    }
     catch (e) { setOutput(e.response?.data?.detail || "Erreur RCON"); } finally { setBusy(false); } };
+  const configureMatchzyRemoteLog = async (id) => { setBusy(true); setSelected(id); setOutput("Configuration MatchZy API en cours…");
+    try {
+      const r = await axios.post(`${API}/cs2/servers/${id}/configure-matchzy-remote-log`, {}, { headers: authH });
+      const details = (r.data.outputs || []).map(item => `${item.command}\n${item.output || ""}`.trim()).join("\n\n");
+      setOutput(details || `Webhook MatchZy configuré vers ${r.data.webhook_url}`);
+      await refresh();
+    }
+    catch (e) { setOutput(e.response?.data?.detail || "Erreur configuration MatchZy"); } finally { setBusy(false); } };
   const runCmd = async () => { if (!selected) { alert("Sélectionnez un serveur via Ping d'abord."); return; } setBusy(true); setOutput("Exécution…");
-    try { const r = await axios.post(`${API}/cs2/servers/${selected}/rcon`, { command: cmd }, { headers: authH }); setOutput(r.data.output); }
+    try {
+      const r = await axios.post(`${API}/cs2/servers/${selected}/rcon`, { command: cmd }, { headers: authH });
+      const prefix = r.data.queued ? `Commande envoyee au bridge (${r.data.command_id})\n\n` : "";
+      setOutput(`${prefix}${r.data.output || ""}`.trim());
+    }
     catch (e) { setOutput(e.response?.data?.detail || "Erreur RCON"); } finally { setBusy(false); } };
 
   return (
     <div data-testid="cs2-panel">
-      <SectionTitle sub="Pilotage CS2 (RCON live)" title="Serveurs de match"/>
+      <SectionTitle sub="Pilotage CS2 (RCON / Bridge)" title="Serveurs de match"/>
       {isAdmin && (
-        <form onSubmit={addServer} className="glass p-6 grid md:grid-cols-5 gap-3 items-end mb-4" data-testid="cs2-add-form">
+        <form onSubmit={addServer} className="glass p-6 grid md:grid-cols-2 xl:grid-cols-5 gap-3 items-end mb-4" data-testid="cs2-add-form">
           <div><label className="text-xs uppercase tracking-widest text-white/40">Nom</label>
             <input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="EU-FR-01" required data-testid="cs2-name-input"/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Mode de controle</label>
+            <select value={form.control_mode} onChange={e=>setForm({...form,control_mode:e.target.value})}>
+              <option value="bridge">Bridge (Fake RCON / plugin)</option>
+              <option value="rcon">RCON reseau</option>
+            </select></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Hebergeur</label>
+            <input value={form.provider} onChange={e=>setForm({...form,provider:e.target.value})} placeholder="FShost.me"/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Region</label>
+            <input value={form.region} onChange={e=>setForm({...form,region:e.target.value})} placeholder="EU-FR"/></div>
           <div><label className="text-xs uppercase tracking-widest text-white/40">Hôte / IP</label>
             <input value={form.host} onChange={e=>setForm({...form,host:e.target.value})} placeholder="cs2.example.net" required data-testid="cs2-host-input"/></div>
-          <div><label className="text-xs uppercase tracking-widest text-white/40">Port</label>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">{form.control_mode === "bridge" ? "Port controle (optionnel)" : "Port RCON"}</label>
             <input type="number" value={form.port} onChange={e=>setForm({...form,port:e.target.value})} required data-testid="cs2-port-input"/></div>
-          <div><label className="text-xs uppercase tracking-widest text-white/40">Mot de passe RCON</label>
-            <input type="password" value={form.rcon_password} onChange={e=>setForm({...form,rcon_password:e.target.value})} required data-testid="cs2-rcon-input"/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Host public</label>
+            <input value={form.public_host} onChange={e=>setForm({...form,public_host:e.target.value})} placeholder="play.tonserveur.fr"/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Port jeu</label>
+            <input type="number" value={form.game_port} onChange={e=>setForm({...form,game_port:e.target.value})} placeholder="27015"/></div>
+          <div><label className="text-xs uppercase tracking-widest text-white/40">Port HLTV / GOTV</label>
+            <input type="number" value={form.gotv_port} onChange={e=>setForm({...form,gotv_port:e.target.value})} placeholder="27020"/></div>
+          {form.control_mode === "bridge" ? (
+            <div><label className="text-xs uppercase tracking-widest text-white/40">Bridge token</label>
+              <input type="password" value={form.bridge_token} onChange={e=>setForm({...form,bridge_token:e.target.value})} required data-testid="cs2-bridge-token-input"/></div>
+          ) : (
+            <div><label className="text-xs uppercase tracking-widest text-white/40">Mot de passe RCON</label>
+              <input type="password" value={form.rcon_password} onChange={e=>setForm({...form,rcon_password:e.target.value})} required data-testid="cs2-rcon-input"/></div>
+          )}
+          <div className="flex flex-wrap gap-4 xl:col-span-5 text-xs text-white/70">
+            <label className="flex items-center gap-2"><input type="checkbox" checked={form.matchzy_enabled} onChange={e=>setForm({...form,matchzy_enabled:e.target.checked})}/>MatchZy</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={form.cssimpleadmin_enabled} onChange={e=>setForm({...form,cssimpleadmin_enabled:e.target.checked})}/>CSsimpleadmin</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={form.fake_rcon_enabled} onChange={e=>setForm({...form,fake_rcon_enabled:e.target.checked})}/>Fake RCON</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={form.hltv_enabled} onChange={e=>setForm({...form,hltv_enabled:e.target.checked})}/>HLTV / GOTV</label>
+          </div>
           <button disabled={busy} className="btn-neon" data-testid="cs2-add-btn"><Plus size={14}/>Ajouter</button>
         </form>
       )}
@@ -2945,11 +3260,25 @@ const Cs2Panel = () => {
               <span className="font-display text-lg flex items-center gap-2"><Server size={16}/>{s.name}</span>
               <span className={`w-2 h-2 rounded-full ${s.status==="online"||s.status==="live" ? "bg-green-400 shadow-[0_0_6px_#4ade80]" : "bg-yellow-400"}`}/>
             </div>
-            <div className="text-xs text-white/40 mt-2 font-mono-display">{s.host}:{s.port}</div>
+            <div className="text-xs text-white/40 mt-2 font-mono-display">{s.provider || "custom"} • {(s.public_host || s.host)}:{s.game_port || s.port}</div>
+            <div className="text-xs text-white/60 mt-1">{s.control_mode === "bridge" ? "Bridge serveur" : `RCON ${s.host}:${s.port}`} • {s.region || "region non renseignee"}</div>
             <div className="text-xs text-white/60 mt-1">Statut : {s.status}</div>
+            <div className="text-xs text-white/40 mt-1">Mode : {s.control_mode === "bridge" ? "bridge" : "rcon"}</div>
+            {s.last_bridge_seen_at && <div className="text-xs text-white/40 mt-1">Bridge vu : {new Date(s.last_bridge_seen_at).toLocaleString("fr-FR")}</div>}
+            <div className="flex flex-wrap gap-2 mt-3 text-[10px] uppercase tracking-widest text-white/50">
+              {s.capabilities?.matchzy && <span className="border border-white/10 px-2 py-1">MatchZy</span>}
+              {s.capabilities?.cssimpleadmin && <span className="border border-white/10 px-2 py-1">CSsimpleadmin</span>}
+              {s.capabilities?.fake_rcon && <span className="border border-white/10 px-2 py-1">Fake RCON</span>}
+              {s.capabilities?.hltv && <span className="border border-white/10 px-2 py-1">HLTV</span>}
+            </div>
+            <div className="flex flex-wrap gap-2 mt-4">
+              {s.connect_url && <a href={s.connect_url} className="btn-ghost text-xs"><ExternalLink size={12}/>Connexion</a>}
+              {s.hltv_url && <a href={s.hltv_url} className="btn-ghost text-xs"><Tv size={12}/>Spectateur</a>}
+            </div>
             {isAdmin && (
               <div className="flex flex-wrap gap-2 mt-4">
                 <button disabled={busy} onClick={()=>ping(s.id)} className="btn-ghost text-xs" data-testid={`cs2-ping-${s.id}`}><RefreshCw size={12}/>Ping / Sélectionner</button>
+                {s.capabilities?.matchzy && <button disabled={busy} onClick={()=>configureMatchzyRemoteLog(s.id)} className="btn-ghost text-xs" data-testid={`cs2-matchzy-log-${s.id}`}><Radio size={12}/>Configurer MatchZy API</button>}
                 <button onClick={()=>del(s.id)} className="btn-ghost text-xs text-red-400" data-testid={`cs2-del-${s.id}`}><Trash2 size={12}/></button>
               </div>
             )}
@@ -2959,7 +3288,9 @@ const Cs2Panel = () => {
 
       {isAdmin && (
         <div className="glass p-6 mt-4" data-testid="cs2-console">
-          <h3 className="font-display text-sm uppercase tracking-widest text-white/60 flex items-center gap-2"><Terminal size={14}/>Console RCON {selected ? "" : "(sélectionnez un serveur)"}</h3>
+          <h3 className="font-display text-sm uppercase tracking-widest text-white/60 flex items-center gap-2"><Terminal size={14}/>Console serveur {selected ? "" : "(sélectionnez un serveur)"}</h3>
+          <p className="text-xs text-white/40 mt-2">En mode `rcon`, la commande part immediatement. En mode `bridge`, elle est mise en file et executee localement par le plugin serveur.</p>
+          <p className="text-xs text-white/40 mt-2">Le bouton `Configurer MatchZy API` applique `matchzy_remote_log_url` et l'authentification du webhook directement sur le serveur.</p>
           <div className="flex gap-2 mt-3">
             <input value={cmd} onChange={e=>setCmd(e.target.value)} placeholder="status" className="flex-1 font-mono-display" data-testid="cs2-cmd-input"/>
             <button disabled={busy || !selected} onClick={runCmd} className="btn-neon" data-testid="cs2-run-btn"><Play size={14}/>Exécuter</button>
@@ -3970,10 +4301,32 @@ const AuthZone = () => {
 const Login = () => {
   const { login, register, user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [mode, setMode] = useState("login");
   const [form, setForm] = useState({ pseudo: "", email: "", password: "", country: "FR" });
   const [err, setErr] = useState(""); const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(false);
   useEffect(() => { if (user) navigate("/profile"); }, [user, navigate]);
+  useEffect(() => {
+    const steamError = new URLSearchParams(location.search).get("steam_error");
+    if (!steamError) return;
+    if (steamError === "invalid") {
+      setErr("Validation Steam invalide. Reessayez.");
+      return;
+    }
+    if (steamError === "cancelled") {
+      setErr("Connexion Steam annulee.");
+      return;
+    }
+    if (steamError === "no_id") {
+      setErr("Steam ID introuvable.");
+      return;
+    }
+    if (steamError === "steam_link_invalid") {
+      setErr("La session de liaison Steam a expire.");
+      return;
+    }
+    setErr("Connexion Steam impossible pour le moment.");
+  }, [location.search]);
   const handleSteam = () => { window.location.href = `${API}/auth/steam/login`; };
   const submit = async (e) => {
     e.preventDefault(); setErr(""); setMsg(""); setBusy(true);

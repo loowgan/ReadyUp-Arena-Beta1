@@ -49,6 +49,7 @@ FRONTEND_URL=https://readyuparena.gg
 BACKEND_PUBLIC_URL=https://api.readyuparena.gg
 CORS_ORIGINS=https://readyuparena.gg,https://www.readyuparena.gg,http://localhost:3000
 MATCHZY_WEBHOOK_SECRET=generate-another-secret
+MATCHZY_CONFIG_TOKEN=generate-a-third-secret
 RCON_ENC_KEY=generate-a-fernet-key
 ```
 
@@ -110,6 +111,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\deploy-cloudrun.ps1 -ProjectI
 - `BACKEND_PUBLIC_URL`
 - `CORS_ORIGINS`
 - `MATCHZY_WEBHOOK_SECRET`
+- `MATCHZY_CONFIG_TOKEN`
 - `RCON_ENC_KEY`
 - `STRIPE_API_KEY` si Stripe est active
 - `RESEND_API_KEY` et `SENDER_EMAIL` si reset password par email
@@ -119,6 +121,70 @@ Health checks disponibles :
 
 - `/health/live`
 - `/health/ready`
+
+## 2.b MatchZy / FShost / CSTV
+
+Pour un serveur `FShost.me` avec `MatchZy` deja installe :
+
+1. Declarer le serveur dans l'admin ReadyUp avec :
+   - host RCON
+   - port RCON
+   - host public
+   - port jeu
+   - port HLTV / GOTV si disponible
+2. Poser `BACKEND_PUBLIC_URL` sur l'URL publique reelle de l'API.
+3. Poser `MATCHZY_CONFIG_TOKEN` dans le backend.
+4. Poser `MATCHZY_WEBHOOK_SECRET` dans le backend.
+5. Quand le bracket est pret, lancer le match depuis l'admin :
+   - ReadyUp genere le JSON MatchZy
+   - ReadyUp pousse d'abord au serveur via RCON :
+     - `matchzy_remote_log_url`
+     - `matchzy_remote_log_auth_key`
+     - `matchzy_remote_log_auth_value`
+   - le serveur charge ce JSON avec `matchzy_loadmatch_url`
+   - les events `series_start`, `map_result`, `series_end` reviennent dans l'API
+   - le bracket peut alors etre mis a jour automatiquement sur `series_end`
+
+Avec cette approche, aucun ticket hebergeur n'est necessaire si le RCON fonctionne.
+
+### Cas Fake RCON
+
+`fake_rcon` ne remplace pas le RCON reseau pour une application web.
+
+- `fake_rcon_password` et `fake_rcon <command>` servent a un admin connecte en jeu ;
+- le backend ReadyUp ne peut pas taper cette commande comme un joueur ;
+- si tu n'exposes plus de `rcon_password` reseau, il faut passer le serveur en `control_mode=bridge`.
+
+Le mode `bridge` utilise un plugin CounterStrikeSharp qui :
+
+- contacte le backend ;
+- recupere les commandes en attente ;
+- execute localement `Server.ExecuteCommand(...)` ;
+- renvoie l'etat d'execution au backend.
+
+### Fallback persistant via FTP
+
+Si tu veux que le webhook survive a un redemarrage meme avant le prochain lancement depuis ReadyUp, ajoute ces cvars dans la config MatchZy du serveur :
+
+```cfg
+matchzy_remote_log_url "https://your-api-domain/api/cs2/webhooks/matchzy"
+matchzy_remote_log_auth_key "Authorization"
+matchzy_remote_log_auth_value "Bearer YOUR_MATCHZY_WEBHOOK_SECRET"
+```
+
+Chemins observes sur ton serveur local `E:\p3616` :
+
+- `E:\p3616\cfg\matchzy\config.cfg`
+- `E:\p3616\cfg\custom\matchzyload.cfg`
+- `E:\p3616\cfg\custom\cstv.cfg`
+- `E:\p3616\addons\counterstrikesharp\configs\plugins\CS2-SimpleAdmin\Commands.json`
+
+Etat constate :
+
+- `MatchZy` present et demarre en `matchzy_autostart_mode 1`
+- `css_rcon` disponible via `CS2-SimpleAdmin`
+- `CSTV` actif via `cfg/custom/cstv.cfg`
+- `FSH-CS2GOTV`, `FSH-MatchZy` et `FSH-TVFIX` charges cote serveur
 
 ## 3. Vercel
 

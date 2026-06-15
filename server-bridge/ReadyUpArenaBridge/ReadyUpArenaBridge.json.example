@@ -1,0 +1,6 @@
+{
+  "BackendBaseUrl": "https://readyup-arena-api.onrender.com",
+  "BridgeToken": "replace-with-bridge-token",
+  "PollIntervalSeconds": 5,
+  "VerboseLogging": false
+}

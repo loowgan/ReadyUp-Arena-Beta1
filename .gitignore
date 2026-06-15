@@ -78,6 +78,8 @@ agenthub/agents/youtube/db
 
 # Build caches
 .cache/
+server-bridge/**/bin/
+server-bridge/**/obj/
 
 memory/test_credentials.md
 memory/
