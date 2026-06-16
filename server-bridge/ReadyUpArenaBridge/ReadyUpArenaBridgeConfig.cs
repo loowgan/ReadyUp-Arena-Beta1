@@ -6,6 +6,7 @@ public sealed class ReadyUpArenaBridgeConfig
     public string BridgeToken { get; set; } = "";
     public int PollIntervalSeconds { get; set; } = 5;
     public bool VerboseLogging { get; set; } = false;
+    public bool EnableChatReports { get; set; } = true;
 }
 
 internal sealed class BridgeHeartbeatRequest
@@ -29,4 +30,14 @@ internal sealed class BridgeCommandResultRequest
 {
     public string Status { get; set; } = "completed";
     public string? Output { get; set; }
+}
+
+internal sealed class BridgePlayerReportRequest
+{
+    public string ReporterPseudo { get; set; } = "";
+    public string ReporterSteamId { get; set; } = "";
+    public string TargetSteamId { get; set; } = "";
+    public string? TargetPseudo { get; set; }
+    public string Reason { get; set; } = "";
+    public string Kind { get; set; } = "behavior";
 }

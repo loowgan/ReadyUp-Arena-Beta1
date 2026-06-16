@@ -12,6 +12,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Depends, Request, Header
 from pydantic import BaseModel, Field
@@ -49,15 +50,18 @@ def _rcon_exec(host: str, port: int, password: str, command: str, timeout: float
 def _optional_steam_connect(host: Optional[str], port: Optional[int]) -> Optional[str]:
     if not host or not port:
         return None
-    return f"steam://connect/{host}:{int(port)}"
+    command = f"+connect {host}:{int(port)}"
+    return f"steam://rungameid/730//{quote(command, safe=':+.')}"
 
 
 def _private_steam_connect(host: Optional[str], port: Optional[int], password: Optional[str] = None) -> Optional[str]:
     if not host or not port:
         return None
-    connect = f"steam://connect/{host}:{int(port)}"
     secret = (password or "").strip()
-    return f"{connect}/{secret}" if secret else connect
+    command = f"+connect {host}:{int(port)}"
+    if secret:
+        command = f"{command} +password {secret}"
+    return f"steam://rungameid/730//{quote(command, safe=':+.')}"
 
 
 def _backend_public_base() -> str:

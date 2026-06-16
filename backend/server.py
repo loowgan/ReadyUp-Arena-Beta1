@@ -5,7 +5,7 @@ import asyncio, html, json, re, time
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os, logging, uuid, random, secrets
+import os, logging, uuid, random, secrets, hashlib
 import bcrypt, httpx
 from jose import jwt, JWTError
 from urllib.parse import urlencode, urlparse
@@ -1298,6 +1298,10 @@ async def _merge_user_accounts(primary: dict, secondary: dict, reason: str, stra
         {"reporter_user_id": secondary["id"]},
         {"$set": {"reporter_user_id": primary["id"], "reporter_pseudo": final_pseudo}},
     )
+    await db.match_reports.update_many(
+        {"target_user_id": secondary["id"]},
+        {"$set": {"target_user_id": primary["id"], "target_pseudo": final_pseudo}},
+    )
     await db.cards.update_many(
         {"target_user_id": secondary["id"]},
         {"$set": {"target_user_id": primary["id"], "target_pseudo": final_pseudo}},
@@ -2445,11 +2449,26 @@ class MatchReportReq(BaseModel):
     kind: str = Field(pattern="^(technical|pause|behavior|absence|score|cheat|other)$")
     message: str = Field(min_length=3, max_length=500)
     round_label: Optional[str] = Field(default=None, max_length=40)
+    target_user_id: Optional[str] = Field(default=None, max_length=128)
+    target_steam_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class BridgeMatchReportReq(BaseModel):
+    reporter_pseudo: str = Field(min_length=1, max_length=128)
+    reporter_steam_id: str = Field(min_length=3, max_length=64)
+    target_steam_id: str = Field(min_length=3, max_length=64)
+    target_pseudo: Optional[str] = Field(default=None, max_length=128)
+    reason: str = Field(min_length=3, max_length=500)
+    kind: str = Field(default="behavior", pattern="^(behavior|absence|cheat|other)$")
 
 
 class MatchReportStatusReq(BaseModel):
     status: str = Field(pattern="^(open|acknowledged|resolved|rejected)$")
     resolution_note: Optional[str] = Field(default=None, max_length=500)
+
+
+REPORT_CARD_KINDS = {"behavior", "absence", "cheat", "other"}
+REPORT_CARD_THRESHOLD = 3
 
 @api_router.get("/twitch/live")
 async def twitch_live():
@@ -2811,6 +2830,271 @@ async def live_matches():
         m["server"] = srv["name"] if srv else None
     return sorted(live, key=lambda x: x["updated_at"] or "", reverse=True)
 
+
+async def _match_config_participants(match_id: str) -> list[dict]:
+    match_id = str(match_id)
+    docs: list[dict] = []
+
+    stored_match = await db.matchzy_match_configs.find_one({"match_id": match_id}, {"_id": 0, "config": 1})
+    if stored_match and isinstance(stored_match.get("config"), dict):
+        docs.append(stored_match["config"])
+
+    stored_duel = await db.duel_match_configs.find_one({"duel_id": match_id}, {"_id": 0, "config": 1})
+    if stored_duel and isinstance(stored_duel.get("config"), dict):
+        docs.append(stored_duel["config"])
+
+    participants: list[dict] = []
+    seen: set[str] = set()
+    for config in docs:
+        for team_key, fallback_name in (("team1", "Equipe 1"), ("team2", "Equipe 2")):
+            team_doc = config.get(team_key) or {}
+            team_name = str(team_doc.get("name") or fallback_name).strip()
+            players_doc = team_doc.get("players") or {}
+            if not isinstance(players_doc, dict):
+                continue
+            for raw_steam_id, raw_pseudo in players_doc.items():
+                steam_id = str(raw_steam_id or "").strip()
+                pseudo = str(raw_pseudo or steam_id or "Joueur").strip()
+                unique_key = steam_id or f"{team_key}:{pseudo.lower()}"
+                if unique_key in seen:
+                    continue
+                seen.add(unique_key)
+
+                user_doc = None
+                if steam_id:
+                    user_doc = await db.users.find_one(
+                        {"steam_id": steam_id},
+                        {"_id": 0, "id": 1, "pseudo": 1, "steam_id": 1, "custom_avatar_url": 1, "steam_avatar_url": 1},
+                    )
+
+                participants.append({
+                    "user_id": (user_doc or {}).get("id"),
+                    "pseudo": pseudo,
+                    "steam_id": steam_id or None,
+                    "team_key": team_key,
+                    "team_name": team_name,
+                    "avatar_url": (user_doc or {}).get("custom_avatar_url") or (user_doc or {}).get("steam_avatar_url"),
+                    "linked_account": bool(user_doc),
+                })
+    return participants
+
+
+def _match_report_target_required(kind: str) -> bool:
+    return kind in REPORT_CARD_KINDS
+
+
+async def _resolve_match_report_target(
+    match_id: str,
+    target_user_id: Optional[str],
+    target_steam_id: Optional[str],
+) -> Optional[dict]:
+    user_id = str(target_user_id or "").strip() or None
+    steam_id = str(target_steam_id or "").strip() or None
+    if not user_id and not steam_id:
+        return None
+
+    participants = await _match_config_participants(match_id)
+    target = None
+    if user_id:
+        target = next((item for item in participants if item.get("user_id") == user_id), None)
+    if not target and steam_id:
+        target = next((item for item in participants if item.get("steam_id") == steam_id), None)
+    if not target:
+        raise HTTPException(404, "Joueur cible introuvable pour ce match")
+    return target
+
+
+async def _insert_card_record(
+    *,
+    target_user_id: str,
+    target_pseudo: str,
+    issuer_user_id: Optional[str],
+    issuer_pseudo: str,
+    severity: str,
+    reason: str,
+    match_id: Optional[str] = None,
+    auto: bool = False,
+    auto_source: Optional[str] = None,
+    source_report_count: Optional[int] = None,
+) -> tuple[dict, Optional[dict]]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    card = {
+        "id": str(uuid.uuid4()),
+        "target_user_id": target_user_id,
+        "target_pseudo": target_pseudo,
+        "issuer_user_id": issuer_user_id or "system",
+        "issuer_pseudo": issuer_pseudo,
+        "severity": severity,
+        "reason": reason,
+        "match_id": match_id,
+        "status": "active",
+        "created_at": now_iso,
+    }
+    if auto:
+        card["auto"] = True
+    if auto_source:
+        card["auto_source"] = auto_source
+    if source_report_count is not None:
+        card["source_report_count"] = source_report_count
+
+    await db.cards.insert_one(card)
+
+    auto_red = None
+    yellows = await db.cards.count_documents({"target_user_id": target_user_id, "severity": "yellow", "status": "active"})
+    if severity == "yellow" and yellows >= 3:
+        existing_auto_red = await db.cards.find_one(
+            {
+                "target_user_id": target_user_id,
+                "severity": "red",
+                "status": "active",
+                "auto_source": "yellow_card_accumulation",
+            },
+            {"_id": 1},
+        )
+        if not existing_auto_red:
+            auto_red = {
+                "id": str(uuid.uuid4()),
+                "target_user_id": target_user_id,
+                "target_pseudo": target_pseudo,
+                "issuer_user_id": "system",
+                "issuer_pseudo": "Systeme",
+                "severity": "red",
+                "reason": f"Auto-escalation : {yellows} cartons jaunes cumules",
+                "match_id": None,
+                "status": "active",
+                "created_at": now_iso,
+                "auto": True,
+                "auto_source": "yellow_card_accumulation",
+            }
+            await db.cards.insert_one(auto_red)
+    return card, auto_red
+
+
+def _report_counts_for_card(report: dict) -> bool:
+    return bool(report.get("target_user_id")) and str(report.get("kind") or "") in REPORT_CARD_KINDS
+
+
+async def _maybe_issue_auto_yellow_from_reports(report: dict) -> dict:
+    if not _report_counts_for_card(report):
+        return {"yellow_card": None, "auto_red": None, "unique_reports": 0}
+
+    existing_auto = await db.cards.find_one(
+        {
+            "target_user_id": report["target_user_id"],
+            "match_id": report["match_id"],
+            "severity": "yellow",
+            "auto_source": "match_reports_threshold",
+        },
+        {"_id": 0},
+    )
+    if existing_auto:
+        return {"yellow_card": None, "auto_red": None, "unique_reports": int(existing_auto.get("source_report_count") or REPORT_CARD_THRESHOLD)}
+
+    docs = await db.match_reports.find(
+        {
+            "match_id": report["match_id"],
+            "target_user_id": report["target_user_id"],
+            "status": {"$ne": "rejected"},
+            "kind": {"$in": list(REPORT_CARD_KINDS)},
+        },
+        {"_id": 0, "reporter_user_id": 1, "reporter_steam_id": 1, "reporter_pseudo": 1},
+    ).to_list(200)
+
+    identities: set[str] = set()
+    for item in docs:
+        identity = str(
+            item.get("reporter_user_id")
+            or item.get("reporter_steam_id")
+            or item.get("reporter_pseudo")
+            or ""
+        ).strip().lower()
+        if identity:
+            identities.add(identity)
+
+    unique_reports = len(identities)
+    if unique_reports < REPORT_CARD_THRESHOLD:
+        return {"yellow_card": None, "auto_red": None, "unique_reports": unique_reports}
+
+    yellow_card, auto_red = await _insert_card_record(
+        target_user_id=report["target_user_id"],
+        target_pseudo=report.get("target_pseudo") or "Joueur",
+        issuer_user_id=None,
+        issuer_pseudo="Systeme",
+        severity="yellow",
+        reason=f"Auto-carton jaune : {unique_reports} signalements joueurs distincts sur le match",
+        match_id=report["match_id"],
+        auto=True,
+        auto_source="match_reports_threshold",
+        source_report_count=unique_reports,
+    )
+    await journal(
+        "card_auto_report_threshold",
+        None,
+        {"target": report["target_user_id"], "match_id": report["match_id"], "reports": unique_reports},
+    )
+    if auto_red:
+        await journal("card_auto_escalated", None, {"target": report["target_user_id"], "yellows": 3})
+    return {"yellow_card": yellow_card, "auto_red": auto_red, "unique_reports": unique_reports}
+
+
+async def _create_match_report(
+    *,
+    match_id: str,
+    kind: str,
+    message: str,
+    round_label: Optional[str],
+    reporter_user_id: Optional[str],
+    reporter_pseudo: str,
+    reporter_steam_id: Optional[str],
+    source: str,
+    target: Optional[dict] = None,
+) -> tuple[dict, dict]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    report = {
+        "id": str(uuid.uuid4()),
+        "match_id": str(match_id),
+        "kind": kind,
+        "message": message.strip(),
+        "round_label": (round_label or "").strip() or None,
+        "status": "open",
+        "source": source,
+        "reporter_user_id": reporter_user_id,
+        "reporter_pseudo": reporter_pseudo.strip(),
+        "reporter_steam_id": (reporter_steam_id or "").strip() or None,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    if target:
+        report["target_user_id"] = target.get("user_id")
+        report["target_pseudo"] = target.get("pseudo")
+        report["target_steam_id"] = target.get("steam_id")
+        report["target_team_name"] = target.get("team_name")
+
+    await db.match_reports.insert_one(report)
+    await journal(
+        "match_report_created",
+        reporter_user_id,
+        {
+            "match_id": str(match_id),
+            "kind": kind,
+            "source": source,
+            "target_user_id": report.get("target_user_id"),
+            "target_steam_id": report.get("target_steam_id"),
+        },
+    )
+    auto_state = await _maybe_issue_auto_yellow_from_reports(report)
+    return report, auto_state
+
+
+async def _get_bridge_server_from_authorization(authorization: Optional[str]) -> dict:
+    token = (authorization or "").replace("Bearer ", "", 1).strip()
+    if not token:
+        raise HTTPException(401, "Bridge non autorise")
+    server = await db.cs2_servers.find_one({"bridge_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest()}, {"_id": 0})
+    if not server:
+        raise HTTPException(401, "Bridge non autorise")
+    return server
+
 @api_router.get("/matches/{matchid}")
 async def match_detail(matchid: str):
     events = await db.matchzy_events.find({"matchid": matchid}, {"_id": 0}).sort("received_at", 1).to_list(1000)
@@ -2826,12 +3110,14 @@ async def match_detail(matchid: str):
         {"$or": [{"current_match_id": str(matchid)}, {"last_match_id": str(matchid)}]},
         {"_id": 0, "rcon_password": 0},
     )
+    participants = await _match_config_participants(str(matchid))
     return {
         "matchid": str(matchid),
         "summary": latest,
         "ended": any(e["event"] == "series_end" for e in events),
         "timeline": events,
         "server": server,
+        "participants": participants,
     }
 
 
@@ -2849,22 +3135,85 @@ async def create_match_report(matchid: str, req: MatchReportReq, user=Depends(ge
         if not any(str(doc.get("matchid")) == str(matchid) for doc in all_events):
             raise HTTPException(404, "Match introuvable")
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    report = {
-        "id": str(uuid.uuid4()),
-        "match_id": str(matchid),
-        "kind": req.kind,
-        "message": req.message.strip(),
-        "round_label": (req.round_label or "").strip() or None,
-        "status": "open",
-        "reporter_user_id": user["id"],
-        "reporter_pseudo": user["pseudo"],
-        "created_at": now_iso,
-        "updated_at": now_iso,
+    target = await _resolve_match_report_target(str(matchid), req.target_user_id, req.target_steam_id)
+    if _match_report_target_required(req.kind) and not target:
+        raise HTTPException(400, "Selectionnez le joueur vise par le signalement")
+    if target and (
+        target.get("user_id") == user["id"]
+        or (target.get("steam_id") and target.get("steam_id") == str(user.get("steam_id") or "").strip())
+    ):
+        raise HTTPException(400, "Vous ne pouvez pas vous signaler vous-meme")
+
+    report, auto_state = await _create_match_report(
+        match_id=str(matchid),
+        kind=req.kind,
+        message=req.message,
+        round_label=req.round_label,
+        reporter_user_id=user["id"],
+        reporter_pseudo=user["pseudo"],
+        reporter_steam_id=user.get("steam_id"),
+        source="web_ui",
+        target=target,
+    )
+    return {
+        **report,
+        "auto_card_triggered": bool(auto_state.get("yellow_card")),
+        "auto_red_triggered": bool(auto_state.get("auto_red")),
+        "unique_reports": auto_state.get("unique_reports", 0),
     }
-    await db.match_reports.insert_one(report)
-    await journal("match_report_created", user["id"], {"match_id": str(matchid), "kind": req.kind})
-    return report
+
+
+@api_router.post("/matches/bridge/report")
+async def create_bridge_match_report(req: BridgeMatchReportReq, authorization: Optional[str] = Header(default=None)):
+    server = await _get_bridge_server_from_authorization(authorization)
+    match_id = str(server.get("current_match_id") or "").strip()
+    if not match_id:
+        raise HTTPException(409, "Aucun match actif n'est assigne a ce serveur")
+
+    target = await _resolve_match_report_target(match_id, None, req.target_steam_id)
+    if not target:
+        raise HTTPException(404, "Joueur cible introuvable sur le match en cours")
+
+    reporter_steam_id = str(req.reporter_steam_id or "").strip()
+    if target.get("steam_id") and target.get("steam_id") == reporter_steam_id:
+        raise HTTPException(400, "Un joueur ne peut pas se signaler lui-meme")
+
+    duplicate = await db.match_reports.find_one(
+        {
+            "match_id": match_id,
+            "source": "cs2_chat",
+            "kind": req.kind,
+            "reporter_steam_id": reporter_steam_id,
+            "target_steam_id": target.get("steam_id"),
+            "status": {"$ne": "rejected"},
+        },
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        return {"ok": True, "duplicate": True, "match_id": match_id, "report_id": duplicate["id"]}
+
+    reporter_user = await db.users.find_one({"steam_id": reporter_steam_id}, {"_id": 0, "id": 1, "pseudo": 1, "steam_id": 1})
+    report, auto_state = await _create_match_report(
+        match_id=match_id,
+        kind=req.kind,
+        message=req.reason,
+        round_label=None,
+        reporter_user_id=(reporter_user or {}).get("id"),
+        reporter_pseudo=(reporter_user or {}).get("pseudo") or req.reporter_pseudo,
+        reporter_steam_id=reporter_steam_id,
+        source="cs2_chat",
+        target=target,
+    )
+    await db.cs2_servers.update_one({"id": server["id"]}, {"$set": {"last_bridge_seen_at": datetime.now(timezone.utc).isoformat()}})
+    return {
+        "ok": True,
+        "duplicate": False,
+        "match_id": match_id,
+        "report_id": report["id"],
+        "auto_card_triggered": bool(auto_state.get("yellow_card")),
+        "auto_red_triggered": bool(auto_state.get("auto_red")),
+        "unique_reports": auto_state.get("unique_reports", 0),
+    }
 
 
 @api_router.get("/admin/matches/reports", dependencies=[Depends(get_admin_user)])
@@ -2912,29 +3261,18 @@ async def issue_card(req: CardReq, issuer=Depends(get_current_user)):
         raise HTTPException(400, "severity must be 'yellow' or 'red'")
     target = await db.users.find_one({"id": req.target_user_id}, {"_id": 0, "password_hash": 0})
     if not target: raise HTTPException(404, "Joueur cible introuvable")
-    card = {
-        "id": str(uuid.uuid4()), "target_user_id": req.target_user_id,
-        "target_pseudo": target["pseudo"], "issuer_user_id": issuer["id"],
-        "issuer_pseudo": issuer["pseudo"], "severity": req.severity,
-        "reason": req.reason, "match_id": req.match_id,
-        "status": "active", "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.cards.insert_one(card)
+    card, auto_red = await _insert_card_record(
+        target_user_id=req.target_user_id,
+        target_pseudo=target["pseudo"],
+        issuer_user_id=issuer["id"],
+        issuer_pseudo=issuer["pseudo"],
+        severity=req.severity,
+        reason=req.reason,
+        match_id=req.match_id,
+    )
     await journal("card_issued", issuer["id"], {"target": req.target_user_id, "severity": req.severity, "reason": req.reason})
-    # Auto-escalation: 3 yellow cards = 1 red card
-    yellows = await db.cards.count_documents({"target_user_id": req.target_user_id, "severity": "yellow", "status": "active"})
-    auto_red = None
-    if req.severity == "yellow" and yellows >= 3:
-        auto_red = {
-            "id": str(uuid.uuid4()), "target_user_id": req.target_user_id,
-            "target_pseudo": target["pseudo"], "issuer_user_id": "system",
-            "issuer_pseudo": "Système", "severity": "red",
-            "reason": f"Auto-escalation : {yellows} cartons jaunes cumulés",
-            "match_id": None, "status": "active",
-            "created_at": datetime.now(timezone.utc).isoformat(), "auto": True,
-        }
-        await db.cards.insert_one(auto_red)
-        await journal("card_auto_escalated", None, {"target": req.target_user_id, "yellows": yellows})
+    if auto_red:
+        await journal("card_auto_escalated", None, {"target": req.target_user_id, "yellows": 3})
     return {"card": {k: v for k, v in card.items() if k != "_id"}, "auto_red_triggered": auto_red is not None}
 
 @cards_router.get("")

@@ -269,6 +269,11 @@ const MATCH_REPORT_STATUS_LABELS = {
   rejected: "rejete",
 };
 
+const MATCH_REPORT_SOURCE_LABELS = {
+  web_ui: "Site",
+  cs2_chat: "CS2",
+};
+
 const MATCH_EVENT_LABELS = {
   series_start: "Debut de serie",
   series_end: "Fin de serie",
@@ -1196,7 +1201,7 @@ const BracketDraw = () => {
 /* ============== MATCH ROOM ============== */
 const MatchRoom = () => {
   const { id } = useParams();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [detail, setDetail] = useState(null);
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1204,7 +1209,7 @@ const MatchRoom = () => {
   const [submitting, setSubmitting] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
   const [reportError, setReportError] = useState("");
-  const [reportForm, setReportForm] = useState({ kind: "technical", message: "", round_label: "" });
+  const [reportForm, setReportForm] = useState({ kind: "technical", message: "", round_label: "", target_user_id: "", target_steam_id: "" });
 
   useEffect(() => {
     let active = true;
@@ -1246,15 +1251,24 @@ const MatchRoom = () => {
       setReportError("Connectez-vous pour signaler un incident.");
       return;
     }
+    const needsTarget = ["behavior", "absence", "cheat", "other"].includes(reportForm.kind);
+    if (needsTarget && !reportForm.target_steam_id) {
+      setReportError("Selectionnez le joueur vise.");
+      return;
+    }
     setSubmitting(true);
     setReportMessage("");
     setReportError("");
     try {
-      await axios.post(`${API}/matches/${id}/reports`, reportForm, { headers: { Authorization: `Bearer ${token}` } });
+      const response = await axios.post(`${API}/matches/${id}/reports`, reportForm, { headers: { Authorization: `Bearer ${token}` } });
       const reportsResponse = await axios.get(`${API}/matches/${id}/reports`, { headers: { Authorization: `Bearer ${token}` } });
       setReports(reportsResponse.data || []);
-      setReportForm({ kind: reportForm.kind, message: "", round_label: "" });
-      setReportMessage("Signalement transmis au back-office.");
+      setReportForm((prev) => ({ ...prev, message: "", round_label: "" }));
+      setReportMessage(
+        response?.data?.auto_card_triggered
+          ? "Signalement transmis. Carton jaune automatique declenche."
+          : "Signalement transmis au back-office."
+      );
     } catch (submitError) {
       setReportError(submitError?.response?.data?.detail || "Signalement impossible pour le moment.");
     } finally {
@@ -1267,6 +1281,8 @@ const MatchRoom = () => {
   const latestEventAt = detail?.timeline?.length ? detail.timeline[detail.timeline.length - 1]?.received_at : null;
   const openReports = reports.filter((item) => item.status === "open" || item.status === "acknowledged").length;
   const server = detail?.server;
+  const participants = (detail?.participants || []).filter((item) => item?.steam_id);
+  const reportablePlayers = participants.filter((item) => item.user_id !== user?.id && item.steam_id !== user?.steam_id);
 
   if (loading) {
     return (
@@ -1400,6 +1416,31 @@ const MatchRoom = () => {
                   </select>
                 </div>
                 <div>
+                  <label className="text-xs uppercase tracking-widest text-white/40">Joueur vise</label>
+                  <select
+                    value={reportForm.target_steam_id}
+                    onChange={(event) => {
+                      const selected = reportablePlayers.find((item) => item.steam_id === event.target.value);
+                      setReportForm((prev) => ({
+                        ...prev,
+                        target_steam_id: selected?.steam_id || "",
+                        target_user_id: selected?.user_id || "",
+                      }));
+                    }}
+                    data-testid="match-report-target"
+                  >
+                    <option value="">Incident general / aucun joueur</option>
+                    {reportablePlayers.map((item) => (
+                      <option key={`${item.steam_id}-${item.team_name}`} value={item.steam_id}>
+                        {item.pseudo} - {item.team_name}
+                      </option>
+                    ))}
+                  </select>
+                  {["behavior", "absence", "cheat", "other"].includes(reportForm.kind) && (
+                    <div className="text-[11px] text-white/45 mt-2">Requis pour les signalements disciplinaires.</div>
+                  )}
+                </div>
+                <div>
                   <label className="text-xs uppercase tracking-widest text-white/40">Round / contexte</label>
                   <input value={reportForm.round_label} onChange={(event) => setReportForm({ ...reportForm, round_label: event.target.value })} placeholder="Ex: Round 18 / overtime" maxLength={40} />
                 </div>
@@ -1428,6 +1469,8 @@ const MatchRoom = () => {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <div className="font-display text-sm uppercase">{MATCH_REPORT_LABELS[item.kind] || item.kind}</div>
+                      {item.target_pseudo && <div className="text-[11px] text-white/35 mt-1">Cible: {item.target_pseudo}</div>}
+                      {item.source && <div className="text-[11px] text-white/35 mt-1">Origine: {MATCH_REPORT_SOURCE_LABELS[item.source] || item.source}</div>}
                       <div className="text-xs text-white/40 mt-1">{item.reporter_pseudo} • {new Date(item.created_at).toLocaleString("fr-FR")}</div>
                     </div>
                     <div className={`px-3 py-1 border text-xs uppercase tracking-widest rounded-full ${matchReportStatusClass(item.status)}`}>
@@ -4328,6 +4371,8 @@ const MatchReportsAdmin = () => {
                 <div className="text-xs text-white/40 mt-1">
                   Match {item.match_id} • {item.reporter_pseudo} • {new Date(item.created_at).toLocaleString("fr-FR")}
                 </div>
+                {item.target_pseudo && <div className="text-[11px] text-white/35 mt-1">Cible: {item.target_pseudo}</div>}
+                {item.source && <div className="text-[11px] text-white/35 mt-1">Origine: {MATCH_REPORT_SOURCE_LABELS[item.source] || item.source}</div>}
               </div>
               <div className={`px-3 py-1 border text-xs uppercase tracking-widest rounded-full ${matchReportStatusClass(item.status)}`}>
                 {MATCH_REPORT_STATUS_LABELS[item.status] || item.status}

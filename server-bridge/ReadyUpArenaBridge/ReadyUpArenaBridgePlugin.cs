@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
+using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Timers;
 using Microsoft.Extensions.Logging;
 
@@ -40,6 +41,8 @@ public sealed class ReadyUpArenaBridgePlugin : BasePlugin
                 Logger.LogInformation("ReadyUp bridge map start: {MapName}", mapName);
             }
         });
+        AddCommandListener("say", HandleSayCommand, HookMode.Pre);
+        AddCommandListener("say_team", HandleSayCommand, HookMode.Pre);
 
         AddTimer(Math.Max(2, _config.PollIntervalSeconds), PollTimer, TimerFlags.REPEAT);
         Server.NextWorldUpdate(() =>
@@ -96,6 +99,13 @@ public sealed class ReadyUpArenaBridgePlugin : BasePlugin
         }
     }
 
+    private bool HasBridgeConfiguration()
+    {
+        return _httpClient.BaseAddress != null
+            && !string.IsNullOrWhiteSpace(_config.BridgeToken)
+            && !_config.BridgeToken.Contains("replace-with-bridge-token", StringComparison.OrdinalIgnoreCase);
+    }
+
     private bool IsConfigured()
     {
         if (_httpClient.BaseAddress == null)
@@ -111,6 +121,170 @@ public sealed class ReadyUpArenaBridgePlugin : BasePlugin
         }
 
         return true;
+    }
+
+    private HookResult HandleSayCommand(CCSPlayerController? player, CommandInfo commandInfo)
+    {
+        if (!_config.EnableChatReports || !HasBridgeConfiguration())
+        {
+            return HookResult.Continue;
+        }
+
+        if (player is not { IsValid: true } || player.IsBot)
+        {
+            return HookResult.Continue;
+        }
+
+        var text = (commandInfo.ArgString ?? string.Empty).Trim().Trim('"');
+        if (string.IsNullOrWhiteSpace(text) && commandInfo.ArgCount > 1)
+        {
+            text = string.Join(" ", Enumerable.Range(1, commandInfo.ArgCount - 1).Select(commandInfo.GetArg)).Trim().Trim('"');
+        }
+
+        if (!text.StartsWith("!report", StringComparison.OrdinalIgnoreCase))
+        {
+            return HookResult.Continue;
+        }
+
+        var remainder = text.Length > 7 ? text[7..].Trim() : string.Empty;
+        if (string.IsNullOrWhiteSpace(remainder))
+        {
+            commandInfo.ReplyToCommand("Usage: !report <pseudo ou steamid> <raison>");
+            return HookResult.Handled;
+        }
+
+        var resolved = TryResolveReportTarget(player, remainder);
+        if (resolved == null)
+        {
+            commandInfo.ReplyToCommand("Joueur introuvable. Usage: !report <pseudo ou steamid> <raison>");
+            return HookResult.Handled;
+        }
+
+        var (target, reason) = resolved.Value;
+        var reporterSteamId = TryGetSteamId64(player);
+        var targetSteamId = TryGetSteamId64(target);
+        if (string.IsNullOrWhiteSpace(reporterSteamId) || string.IsNullOrWhiteSpace(targetSteamId))
+        {
+            commandInfo.ReplyToCommand("Steam indisponible, signalement refuse.");
+            return HookResult.Handled;
+        }
+
+        if (reporterSteamId == targetSteamId)
+        {
+            commandInfo.ReplyToCommand("Impossible de te signaler toi-meme.");
+            return HookResult.Handled;
+        }
+
+        var payload = new BridgePlayerReportRequest
+        {
+            ReporterPseudo = (player.PlayerName ?? "Joueur").Trim(),
+            ReporterSteamId = reporterSteamId,
+            TargetPseudo = (target.PlayerName ?? "Joueur").Trim(),
+            TargetSteamId = targetSteamId,
+            Reason = reason,
+            Kind = "behavior",
+        };
+
+        if (_config.VerboseLogging)
+        {
+            Logger.LogInformation(
+                "ReadyUp bridge captured !report {Reporter} -> {Target}: {Reason}",
+                payload.ReporterPseudo,
+                payload.TargetPseudo,
+                payload.Reason);
+        }
+
+        commandInfo.ReplyToCommand($"Signalement envoye pour {payload.TargetPseudo}.");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await SubmitPlayerReportAsync(payload);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "ReadyUp bridge chat report failed");
+            }
+        });
+        return HookResult.Handled;
+    }
+
+    private (CCSPlayerController target, string reason)? TryResolveReportTarget(CCSPlayerController reporter, string raw)
+    {
+        var players = Utilities.GetPlayers()
+            .Where(p => p is { IsValid: true, IsBot: false } && p.Slot != reporter.Slot)
+            .OrderByDescending(p => (p.PlayerName ?? string.Empty).Trim().Length)
+            .ToList();
+        if (players.Count == 0)
+        {
+            return null;
+        }
+
+        var remainder = (raw ?? string.Empty).Trim();
+        foreach (var candidate in players)
+        {
+            var name = (candidate.PlayerName ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                if (remainder.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return (candidate, "Signalement en jeu");
+                }
+
+                if (remainder.StartsWith(name + " ", StringComparison.OrdinalIgnoreCase))
+                {
+                    var reason = remainder[name.Length..].Trim();
+                    return (candidate, string.IsNullOrWhiteSpace(reason) ? "Signalement en jeu" : reason);
+                }
+            }
+
+            var steamId = TryGetSteamId64(candidate);
+            if (string.IsNullOrWhiteSpace(steamId))
+            {
+                continue;
+            }
+
+            if (remainder.Equals(steamId, StringComparison.OrdinalIgnoreCase))
+            {
+                return (candidate, "Signalement en jeu");
+            }
+
+            if (remainder.StartsWith(steamId + " ", StringComparison.OrdinalIgnoreCase))
+            {
+                var reason = remainder[steamId.Length..].Trim();
+                return (candidate, string.IsNullOrWhiteSpace(reason) ? "Signalement en jeu" : reason);
+            }
+        }
+
+        var firstSpace = remainder.IndexOf(' ');
+        if (firstSpace <= 0)
+        {
+            return null;
+        }
+
+        var query = remainder[..firstSpace].Trim();
+        var fallbackReason = remainder[(firstSpace + 1)..].Trim();
+        var narrowed = players
+            .Where(p => !string.IsNullOrWhiteSpace(p.PlayerName) && p.PlayerName.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (narrowed.Count != 1)
+        {
+            return null;
+        }
+
+        return (narrowed[0], string.IsNullOrWhiteSpace(fallbackReason) ? "Signalement en jeu" : fallbackReason);
+    }
+
+    private static string? TryGetSteamId64(CCSPlayerController player)
+    {
+        try
+        {
+            return player.AuthorizedSteamID?.SteamId64.ToString();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void PollTimer()
@@ -198,6 +372,11 @@ public sealed class ReadyUpArenaBridgePlugin : BasePlugin
     private async Task SendHeartbeatAsync(BridgeHeartbeatRequest request)
     {
         await PostJsonAsync("/api/cs2/bridge/heartbeat", request);
+    }
+
+    private async Task SubmitPlayerReportAsync(BridgePlayerReportRequest request)
+    {
+        await PostJsonAsync("/api/matches/bridge/report", request);
     }
 
     private async Task<List<BridgePendingCommand>> PullPendingCommandsAsync()
