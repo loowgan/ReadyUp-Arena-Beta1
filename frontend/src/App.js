@@ -720,9 +720,12 @@ const RecentDonors = () => {
     </div>);
 };
 
+const tournamentRegisteredCount = (t) => t?.registered_effective ?? t?.registered ?? 0;
+
 const TournamentCard = ({ t }) => {
   const variant = { open: "soon", registering: "soon", starting: "live", live: "live", in_progress: "live", closed: "offline" }[t.status] || "default";
-  const label = { open: "Inscriptions", registering: "Inscriptions", starting: "Lancement", live: "LIVE", in_progress: "En cours", closed: "Terminé" }[t.status];
+  const label = { open: "Inscriptions", registering: "Inscriptions", starting: "Lancement", live: "LIVE", in_progress: "En cours", closed: "Termine" }[t.status];
+  const registered = tournamentRegisteredCount(t);
   return (
     <Link to={`/tournament/${t.id}`} className="glass glass-hover p-5 block relative overflow-hidden" data-testid={`tournament-card-${t.id}`}>
       <div className="absolute top-0 right-0 w-32 h-32 opacity-20 blur-3xl" style={{ background: t.image_color }}/>
@@ -733,7 +736,7 @@ const TournamentCard = ({ t }) => {
       <h3 className="font-display text-xl mt-3 uppercase">{t.name}</h3>
       <p className="text-sm text-white/50">{t.organizer}</p>
       <div className="mt-4 flex items-center gap-3 text-xs text-white/60">
-        <span className="flex items-center gap-1"><Users size={12}/>{t.registered}/{t.capacity}</span>
+        <span className="flex items-center gap-1"><Users size={12}/>{registered}/{t.capacity}</span>
         <span className="flex items-center gap-1"><Clock size={12}/>{new Date(t.starts_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
         <span className="flex items-center gap-1"><Target size={12}/>{t.region}</span>
       </div>
@@ -801,7 +804,10 @@ const TournamentDetail = () => {
     } catch (e) { alert(e.response?.data?.detail || "Erreur d'inscription"); }
   };
   if (!t) return <div className="p-10 text-center text-white/40">Chargement…</div>;
-  const canRegister = ["open", "registering"].includes(t.status) && t.registered < t.capacity;
+  const registered = tournamentRegisteredCount(t);
+  const canRegisterTeam = t.can_register_team ?? (["open", "registering"].includes(t.status) && registered < t.capacity);
+  const canRegisterSolo = t.can_register_solo ?? canRegisterTeam;
+  const hasOpenRegistration = canRegisterTeam || canRegisterSolo;
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="tournament-detail">
       <Link to="/tournaments" className="text-orange-500 text-xs uppercase tracking-widest">← Retour catalogue</Link>
@@ -811,23 +817,34 @@ const TournamentDetail = () => {
         <h1 className="font-display text-5xl uppercase mt-3">{t.name}</h1>
         <p className="text-white/60">{t.organizer} • {t.format} • {t.mode} • {t.region}</p>
         <div className="grid sm:grid-cols-4 gap-4 mt-6">
-          <Stat label="Inscrites" value={`${t.registered}/${t.capacity}`}/>
+          <Stat label="Inscrites" value={`${registered}/${t.capacity}`}/>
           <Stat label="Format" value={t.format} accent="text-orange-500"/>
-          <Stat label="Récompense" value="🏆" accent="text-yellow-neon"/>
+          <Stat label="Récompense" value={t.prize} accent="text-yellow-neon"/>
           <Stat label="Début" value={new Date(t.starts_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}/>
         </div>
+        <div className="mt-4 text-sm text-white/50">
+          <span>{t.manual_teams_count ?? 0} équipe(s) manuelle(s)</span>
+          <span className="mx-2">•</span>
+          <span>{t.auto_generated_teams_count ?? 0} équipe(s) auto</span>
+          <span className="mx-2">•</span>
+          <span>{t.solo_queue_original_count ?? t.solo_queue?.length ?? 0} solo(s) en file</span>
+        </div>
         <div className="mt-6 flex gap-2 flex-wrap">
-          {canRegister ? (
+          {hasOpenRegistration ? (
             <>
-              <button
-                onClick={() => register("team")}
-                className="btn-neon"
-                data-testid="register-team-btn"
-                disabled={!user?.team_id || user?.team_role !== "captain"}
-              >
-                <Users size={14}/>{!user?.team_id ? "Créer une équipe d'abord" : user?.team_role !== "captain" ? "Capitaine requis" : "Inscrire mon équipe"}
-              </button>
-              <button onClick={() => register("solo")} className="btn-ghost" data-testid="register-solo-btn"><User size={14}/>Rejoindre la file solo</button>
+              {canRegisterTeam && (
+                <button
+                  onClick={() => register("team")}
+                  className="btn-neon"
+                  data-testid="register-team-btn"
+                  disabled={!user?.team_id || user?.team_role !== "captain"}
+                >
+                  <Users size={14}/>{!user?.team_id ? "Créer une équipe d'abord" : user?.team_role !== "captain" ? "Capitaine requis" : "Inscrire mon équipe"}
+                </button>
+              )}
+              {canRegisterSolo && (
+                <button onClick={() => register("solo")} className="btn-ghost" data-testid="register-solo-btn"><User size={14}/>Rejoindre la file solo</button>
+              )}
             </>
           ) : (
             <span className="px-4 py-2 text-xs uppercase tracking-widest border border-white/10 text-white/40" data-testid="register-closed">Inscriptions fermées</span>
@@ -860,16 +877,17 @@ const TournamentDetail = () => {
         </div>
         <div className="glass p-6">
           <h3 className="font-display text-xl uppercase mb-4">Équipes inscrites ({t.teams_in.length})</h3>
-          <div className="space-y-2">{t.teams_in.map((te,i) => (
+          <div className="space-y-2">{t.teams_in.map((te, i) => (
             <div key={te.id} className="flex items-center gap-3 p-2 border border-white/5">
-              <span className="font-mono-display text-white/30 text-xs">#{String(i+1).padStart(2,"0")}</span>
+              <span className="font-mono-display text-white/30 text-xs">#{String(i + 1).padStart(2, "0")}</span>
               <TeamLogo team={te} size={32}/><span className="font-display flex-1">{te.name}</span>
+              {te.generated_from_solos && <span className="text-[10px] uppercase tracking-widest text-orange-400">AUTO</span>}
               <span className="text-xs text-cyan-neon">ELO {te.elo}</span>
             </div>))}</div>
         </div>
         <div className="glass p-6 lg:col-span-2">
           <h3 className="font-display text-xl uppercase mb-4">File solo / Renforts ({t.solo_queue.length})</h3>
-          <div className="space-y-2">{t.solo_queue.map(p => (
+          <div className="space-y-2">{t.solo_queue.map((p) => (
             <div key={p.id} className="flex items-center gap-3 p-2 border border-white/5">
               <span className={`w-2 h-2 rounded-full ${p.online ? "bg-green-400 shadow-[0_0_8px_#4ade80]" : "bg-white/20"}`}/>
               <span className="font-display flex-1">{p.pseudo} <span className="text-xs text-white/40">{p.role}</span></span>
@@ -1059,6 +1077,11 @@ const WaitingRoom = () => {
   const wsRef = useRef(null);
 
   useEffect(() => { axios.get(`${API}/tournaments/${id}/waiting-room`).then(r => setData(r.data)); }, [id]);
+  useEffect(() => {
+    if (!data) return;
+    setPhase(data.phase || "open");
+    setSeconds(data.starts_in_seconds);
+  }, [data]);
 
   useEffect(() => {
     const wsUrl = `${WS_BASE_URL}/api/ws/waiting-room/${id}` + (token ? `?token=${token}` : "");
@@ -1080,8 +1103,8 @@ const WaitingRoom = () => {
 
   if (!data) return <div className="p-10 text-center text-white/40">Chargement…</div>;
   const displaySec = seconds !== null ? seconds : data.starts_in_seconds;
-  const mm = String(Math.floor(displaySec/60)).padStart(2,"0");
-  const ss = String(displaySec%60).padStart(2,"0");
+  const mm = String(Math.floor(displaySec / 60)).padStart(2, "0");
+  const ss = String(displaySec % 60).padStart(2, "0");
   const phaseColor = { open: "text-white", first_call: "text-yellow-neon", last_call: "text-orange-500", countdown: "text-red-500" }[phase] || "text-white";
   const phaseLabel = { open: "Salle d'attente — ouverte", first_call: "Premier appel — confirmez votre équipe", last_call: "Dernier appel — départ imminent", countdown: "Décompte" }[phase] || "Salle d'attente";
 
@@ -1090,7 +1113,8 @@ const WaitingRoom = () => {
       <div className="glass p-8 text-center relative overflow-hidden">
         <Particles/>
         <div className="flex items-center justify-center gap-3"><Badge variant="live">SALLE D'ATTENTE</Badge>
-          <span className="text-xs uppercase tracking-widest text-cyan-neon" data-testid="ws-presence-count">● {presence.length} connecté{presence.length>1?'s':''}</span></div>
+          <span className="text-xs uppercase tracking-widest text-cyan-neon" data-testid="ws-presence-count">● {presence.length} connecté{presence.length > 1 ? 's' : ''}</span></div>
+        <div className="mt-4 text-xs uppercase tracking-[0.3em] text-white/40">{data.tournament_name || `Tournoi ${id}`}</div>
         <div className={`font-display font-bold text-7xl sm:text-8xl mt-4 ${phaseColor}`} data-testid="countdown-timer">{mm}:{ss}</div>
         <p className={`mt-2 uppercase tracking-[0.3em] text-sm ${phaseColor}`}>{phaseLabel}</p>
         <div className="mt-6 flex gap-2 justify-center flex-wrap">
@@ -1098,11 +1122,17 @@ const WaitingRoom = () => {
           <button onClick={startCountdown} className="btn-neon" data-testid="start-countdown-btn"><Zap size={14}/>Lancer le décompte serveur</button>
         </div>
       </div>
+      <div className="grid md:grid-cols-4 gap-4 mt-6">
+        <Stat label="Équipes valides" value={`${data.teams_confirmed}/${data.teams_total}`}/>
+        <Stat label="Équipes auto" value={data.auto_generated_teams_count ?? 0} accent="text-orange-500"/>
+        <Stat label="Solos en attente" value={data.solo_queue_count ?? 0} accent="text-cyan-neon"/>
+        <Stat label="Places restantes" value={data.teams_missing ?? 0}/>
+      </div>
       <div className="grid lg:grid-cols-3 gap-4 mt-6">
         <div className="glass p-6">
           <h3 className="font-display text-xl uppercase mb-4">Présence ({presence.length})</h3>
           <div className="space-y-2 max-h-80 overflow-y-auto">
-            {presence.map(p => (<div key={p.id} className="flex items-center gap-3 p-2 border border-white/5" data-testid={`presence-${p.id}`}>
+            {presence.map((p) => (<div key={p.id} className="flex items-center gap-3 p-2 border border-white/5" data-testid={`presence-${p.id}`}>
               <span className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_8px_#4ade80]"/>
               <span className="font-display flex-1">{p.pseudo}</span>
               <span className="text-xs text-orange-500">LVL {p.level}</span></div>))}
@@ -1112,20 +1142,49 @@ const WaitingRoom = () => {
         <div className="glass p-6">
           <h3 className="font-display text-xl uppercase mb-4">Événements live</h3>
           <div className="space-y-2 max-h-80 overflow-y-auto">
-            {liveEvents.map((e,i) => (<div key={i} className="flex gap-3 text-sm" data-testid={`live-event-${i}`}>
+            {liveEvents.map((e, i) => (<div key={i} className="flex gap-3 text-sm" data-testid={`live-event-${i}`}>
               <span className="font-mono-display text-orange-500 text-xs">{e.time}</span><span className="text-white/70">{e.msg}</span></div>))}
-            {liveEvents.length === 0 && data.events.map((e,i) => (<div key={i} className="flex gap-3 text-sm text-white/40"><span className="font-mono-display text-xs">{e.time}</span><span>{e.msg}</span></div>))}
+            {liveEvents.length === 0 && data.events.map((e, i) => (<div key={i} className="flex gap-3 text-sm text-white/40"><span className="font-mono-display text-xs">{e.time}</span><span>{e.msg}</span></div>))}
           </div>
         </div>
         <div className="glass p-6 flex flex-col">
           <h3 className="font-display text-xl uppercase mb-4">Chat</h3>
           <div className="flex-1 space-y-1 max-h-64 overflow-y-auto mb-3 text-sm">
-            {chat.map((c,i) => (<div key={i} data-testid={`chat-msg-${i}`}><span className="text-orange-500 font-display">{c.from}</span> <span className="text-white/70">{c.msg}</span></div>))}
+            {chat.map((c, i) => (<div key={i} data-testid={`chat-msg-${i}`}><span className="text-orange-500 font-display">{c.from}</span> <span className="text-white/70">{c.msg}</span></div>))}
             {chat.length === 0 && <div className="text-white/30">Aucun message</div>}
           </div>
           <div className="flex gap-2">
-            <input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&sendChat()} placeholder="Message…" className="flex-1" data-testid="chat-input"/>
+            <input value={msg} onChange={e => setMsg(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendChat()} placeholder="Message…" className="flex-1" data-testid="chat-input"/>
             <button onClick={sendChat} className="btn-ghost" data-testid="chat-send">→</button>
+          </div>
+        </div>
+      </div>
+      <div className="grid lg:grid-cols-2 gap-4 mt-6">
+        <div className="glass p-6">
+          <h3 className="font-display text-xl uppercase mb-4">Équipes confirmées ({data.teams_in?.length || 0})</h3>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {(data.teams_in || []).map((team, index) => (
+              <div key={team.id || index} className="flex items-center gap-3 p-2 border border-white/5">
+                <span className="font-mono-display text-white/30 text-xs">#{String(index + 1).padStart(2, '0')}</span>
+                <TeamLogo team={team} size={28}/>
+                <span className="font-display flex-1">{team.name}</span>
+                {team.generated_from_solos && <span className="text-[10px] uppercase tracking-widest text-orange-400">AUTO</span>}
+              </div>
+            ))}
+            {!(data.teams_in || []).length && <div className="text-white/30 text-sm">Aucune équipe confirmée</div>}
+          </div>
+        </div>
+        <div className="glass p-6">
+          <h3 className="font-display text-xl uppercase mb-4">Renforts en attente ({data.solo_queue?.length || 0})</h3>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {(data.solo_queue || []).map((player) => (
+              <div key={player.id} className="flex items-center gap-3 p-2 border border-white/5">
+                <span className={`w-2 h-2 rounded-full ${player.online ? 'bg-green-400 shadow-[0_0_8px_#4ade80]' : 'bg-white/20'}`}/>
+                <span className="font-display flex-1">{player.pseudo}</span>
+                <span className="text-xs text-white/40">{player.role || 'Polyvalent'}</span>
+              </div>
+            ))}
+            {!(data.solo_queue || []).length && <div className="text-white/30 text-sm">Aucun solo en attente</div>}
           </div>
         </div>
       </div>

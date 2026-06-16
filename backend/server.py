@@ -846,17 +846,43 @@ AUTO_TEAM_MIN_TEAMS = 2
 AUTO_TEAM_COLORS = ["#FF4600", "#00F0FF", "#FF003C", "#10B981", "#8B5CF6", "#FFB800"]
 
 
-def _build_auto_solo_teams(solo_entries: list[dict], slots_remaining: int) -> tuple[list[dict], list[dict]]:
+def _auto_solo_team_count(solo_count: int, slots_remaining: int) -> int:
     if slots_remaining <= 0:
-        return [], solo_entries
+        return 0
+    possible_teams = min(max(int(solo_count or 0), 0) // AUTO_TEAM_SIZE, slots_remaining)
+    return possible_teams if possible_teams >= AUTO_TEAM_MIN_TEAMS else 0
 
-    possible_teams = min(len(solo_entries) // AUTO_TEAM_SIZE, slots_remaining)
-    if possible_teams < AUTO_TEAM_MIN_TEAMS:
+
+def _summarize_tournament_registration_counts(capacity: int, manual_team_count: int, solo_count: int) -> dict:
+    manual_team_count = max(int(manual_team_count or 0), 0)
+    solo_count = max(int(solo_count or 0), 0)
+    capacity = max(int(capacity or 0), 0)
+    slots_remaining_from_manual = max(capacity - manual_team_count, 0)
+    auto_generated_teams_count = _auto_solo_team_count(solo_count, slots_remaining_from_manual)
+    registered_effective = manual_team_count + auto_generated_teams_count
+    solo_waiting_count = max(solo_count - (auto_generated_teams_count * AUTO_TEAM_SIZE), 0)
+    max_solo_players = slots_remaining_from_manual * AUTO_TEAM_SIZE if slots_remaining_from_manual >= AUTO_TEAM_MIN_TEAMS else 0
+    return {
+        "manual_teams_count": manual_team_count,
+        "solo_queue_original_count": solo_count,
+        "slots_remaining_from_manual": slots_remaining_from_manual,
+        "auto_generated_teams_count": auto_generated_teams_count,
+        "registered_effective": registered_effective,
+        "solo_waiting_count": solo_waiting_count,
+        "team_slots_remaining": max(capacity - registered_effective, 0),
+        "solo_slots_remaining": max(max_solo_players - solo_count, 0),
+        "max_solo_players": max_solo_players,
+    }
+
+
+def _build_auto_solo_teams(solo_entries: list[dict], slots_remaining: int) -> tuple[list[dict], list[dict]]:
+    auto_team_count = _auto_solo_team_count(len(solo_entries), slots_remaining)
+    if auto_team_count <= 0:
         return [], solo_entries
 
     teams: list[dict] = []
-    consumed = possible_teams * AUTO_TEAM_SIZE
-    for index in range(possible_teams):
+    consumed = auto_team_count * AUTO_TEAM_SIZE
+    for index in range(auto_team_count):
         chunk = solo_entries[index * AUTO_TEAM_SIZE:(index + 1) * AUTO_TEAM_SIZE]
         if len(chunk) < AUTO_TEAM_SIZE:
             break
@@ -942,24 +968,117 @@ async def _build_tournament_registration_snapshot(tournament_doc: dict) -> dict:
             "source": "solo_registration",
         })
 
-    capacity = int(tournament_doc.get("capacity", 0) or 0)
-    manual_team_count = len(team_entries)
-    slots_remaining = max(capacity - manual_team_count, 0)
+    summary = _summarize_tournament_registration_counts(
+        int(tournament_doc.get("capacity", 0) or 0),
+        len(team_entries),
+        len(solo_entries),
+    )
+    slots_remaining = summary["slots_remaining_from_manual"]
     auto_teams, remaining_solos = _build_auto_solo_teams(solo_entries, slots_remaining)
-    effective_registered = manual_team_count + len(auto_teams)
 
     return {
         "registrations": regs,
         "teams_in": [*team_entries, *auto_teams],
-        "manual_teams_count": manual_team_count,
         "auto_generated_teams": auto_teams,
-        "auto_generated_teams_count": len(auto_teams),
         "solo_queue": remaining_solos,
-        "solo_queue_original_count": len(solo_entries),
+        "manual_teams_count": summary["manual_teams_count"],
+        "auto_generated_teams_count": summary["auto_generated_teams_count"],
+        "solo_queue_original_count": summary["solo_queue_original_count"],
         "solo_waiting_count": len(remaining_solos),
-        "registered_effective": effective_registered,
+        "registered_effective": summary["registered_effective"],
+        "team_slots_remaining": summary["team_slots_remaining"],
+        "solo_slots_remaining": summary["solo_slots_remaining"],
+        "max_solo_players": summary["max_solo_players"],
         "registrations_count": len(regs),
     }
+
+
+async def _build_tournament_registration_summary(tournament_doc: dict) -> dict:
+    regs = await db.tournament_registrations.find(
+        {"tournament_id": tournament_doc["id"]},
+        {"_id": 0, "entity_type": 1},
+    ).to_list(300)
+    manual_team_count = sum(1 for reg in regs if reg.get("entity_type") == "team")
+    solo_count = len(regs) - manual_team_count
+    return {
+        **_summarize_tournament_registration_counts(
+            int(tournament_doc.get("capacity", 0) or 0),
+            manual_team_count,
+            solo_count,
+        ),
+        "registrations_count": len(regs),
+    }
+
+
+def _tournament_response_payload(tournament_doc: dict, snapshot: dict, include_lists: bool = False) -> dict:
+    registration_open = tournament_doc.get("status") in ("open", "registering")
+    payload = {
+        **tournament_doc,
+        "registered": snapshot["registered_effective"],
+        "registered_effective": snapshot["registered_effective"],
+        "registrations_count": snapshot["registrations_count"],
+        "manual_teams_count": snapshot["manual_teams_count"],
+        "auto_generated_teams_count": snapshot["auto_generated_teams_count"],
+        "solo_queue_original_count": snapshot["solo_queue_original_count"],
+        "solo_waiting_count": snapshot["solo_waiting_count"],
+        "team_slots_remaining": snapshot["team_slots_remaining"],
+        "solo_slots_remaining": snapshot["solo_slots_remaining"],
+        "can_register_team": registration_open and snapshot["team_slots_remaining"] > 0,
+        "can_register_solo": registration_open and snapshot["solo_slots_remaining"] > 0,
+    }
+    if include_lists:
+        payload["teams_in"] = snapshot["teams_in"]
+        payload["solo_queue"] = snapshot["solo_queue"]
+        payload["auto_generated_teams"] = snapshot["auto_generated_teams"]
+    return payload
+
+
+def _seconds_until_iso(value: Optional[str]) -> int:
+    target = _parse_iso_or_min(value)
+    if target == datetime.min.replace(tzinfo=timezone.utc):
+        return 0
+    return max(int(round((target - datetime.now(timezone.utc)).total_seconds())), 0)
+
+
+def _countdown_label(seconds: int) -> str:
+    clipped = max(int(seconds or 0), 0)
+    minutes, remaining_seconds = divmod(clipped, 60)
+    return f"T-{minutes}:{remaining_seconds:02d}"
+
+
+def _build_waiting_room_events(snapshot: dict, starts_in_seconds: int) -> list[dict]:
+    events: list[dict] = []
+    if starts_in_seconds > 0 and starts_in_seconds <= 300:
+        events.append({
+            "time": _countdown_label(starts_in_seconds),
+            "type": "countdown",
+            "msg": "Compte a rebours actif avant lancement.",
+        })
+    if snapshot["manual_teams_count"] > 0:
+        events.append({
+            "time": "LIVE",
+            "type": "teams_registered",
+            "msg": f"{snapshot['manual_teams_count']} equipe(s) complete(s) deja validee(s).",
+        })
+    if snapshot["auto_generated_teams_count"] > 0:
+        events.append({
+            "time": "LIVE",
+            "type": "solo_teams_ready",
+            "msg": f"{snapshot['auto_generated_teams_count']} equipe(s) auto-composee(s) depuis la file solo.",
+        })
+    if snapshot["solo_waiting_count"] > 0:
+        events.append({
+            "time": "LIVE",
+            "type": "solo_waiting",
+            "msg": f"{snapshot['solo_waiting_count']} joueur(s) attend(ent) encore une escouade complete.",
+        })
+    if not events:
+        events.append({
+            "time": "LIVE",
+            "type": "idle",
+            "msg": "Salle d'attente ouverte. En attente des prochaines inscriptions.",
+        })
+    return events[:6]
 
 
 async def _resolve_available_pseudo(base_pseudo: str, user_id: Optional[str] = None, fallback_suffix: Optional[str] = None) -> str:
@@ -1827,27 +1946,20 @@ async def list_players(available_only: bool = False):
 @api_router.get("/tournaments")
 async def list_tournaments(status: Optional[str] = None):
     q = {"status": status} if status else {}
-    return await db.tournaments.find(q, {"_id": 0}).sort("starts_at", 1).to_list(200)
+    docs = await db.tournaments.find(q, {"_id": 0}).sort("starts_at", 1).to_list(200)
+    items = []
+    for doc in docs:
+        summary = await _build_tournament_registration_summary(doc)
+        items.append(_tournament_response_payload(doc, summary))
+    return items
 
 @api_router.get("/tournaments/{tid}")
 async def get_tournament(tid: str):
     t = await db.tournaments.find_one({"id": tid}, {"_id": 0})
     if not t:
         raise HTTPException(404, "Tournament not found")
-    regs = await db.tournament_registrations.find({"tournament_id": tid}, {"_id": 0}).sort("created_at", 1).to_list(200)
-    teams_in, solo_queue = [], []
-    for r in regs:
-        if r["entity_type"] == "team":
-            td = await db.teams.find_one({"id": r.get("entity_id")}, {"_id": 0}) if r.get("entity_id") else None
-            teams_in.append(td or {"id": r["id"], "name": r["entity_name"], "tag": r["entity_name"][:4].upper(), "elo": 0, "logo_color": "#6b7280"})
-        else:
-            pd = await db.players.find_one({"id": r.get("entity_id")}, {"_id": 0}) if r.get("entity_id") else None
-            solo_queue.append(pd or {"id": r["id"], "pseudo": r["entity_name"], "role": "-", "online": True, "steam_verified": False})
-    if not teams_in:
-        teams_in = await db.teams.find({}, {"_id": 0}).sort("elo", -1).to_list(min(t.get("registered", 0) or 0, 8))
-    if not solo_queue:
-        solo_queue = await db.players.find({"available": True}, {"_id": 0}).limit(5).to_list(5)
-    return {**t, "teams_in": teams_in, "solo_queue": solo_queue, "registrations_count": len(regs)}
+    snapshot = await _build_tournament_registration_snapshot(t)
+    return _tournament_response_payload(t, snapshot, include_lists=True)
 
 @api_router.get("/news")
 async def list_news():
@@ -2303,7 +2415,8 @@ async def admin_update_tournament(tid: str, req: TournamentAdminReq, admin=Depen
     status = req.status.strip()
     if status not in TOURNAMENT_STATES:
         raise HTTPException(400, f"Statut inconnu. Choix : {TOURNAMENT_STATES}")
-    if req.capacity < existing.get("registered", 0):
+    summary = await _build_tournament_registration_summary(existing)
+    if req.capacity < summary.get("registered_effective", 0):
         raise HTTPException(400, "La capacité ne peut pas être inférieure au nombre déjà inscrit")
     updates = {
         "name": req.name.strip(),
