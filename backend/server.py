@@ -2780,8 +2780,37 @@ async def stripe_webhook(request: Request):
     await journal("stripe_webhook", None, {"event_id": evt.event_id, "type": evt.event_type, "session": evt.session_id})
     return {"received": True}
 
-# Live waiting room snapshot (mock realtime)
+# Live waiting room snapshot (real registrations + countdown)
 @api_router.get("/tournaments/{tid}/waiting-room")
+async def waiting_room_live_snapshot(tid: str):
+    tournament = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not tournament:
+        raise HTTPException(404, "Tournoi introuvable")
+    snapshot = await _build_tournament_registration_snapshot(tournament)
+    countdown = await rs.get_countdown(tid)
+    starts_in_seconds = (
+        max(0, int(round(float(countdown["deadline"]) - time.time())))
+        if countdown else _seconds_until_iso(tournament.get("starts_at"))
+    )
+    return {
+        "tournament_id": tid,
+        "tournament_name": tournament.get("name"),
+        "starts_in_seconds": starts_in_seconds,
+        "phase": _phase_for(starts_in_seconds),
+        "teams_confirmed": snapshot["registered_effective"],
+        "teams_total": int(tournament.get("capacity", 0) or 0),
+        "teams_missing": max(int(tournament.get("capacity", 0) or 0) - snapshot["registered_effective"], 0),
+        "manual_teams_count": snapshot["manual_teams_count"],
+        "auto_generated_teams_count": snapshot["auto_generated_teams_count"],
+        "solo_queue_count": snapshot["solo_waiting_count"],
+        "presence_count": len(hub.presence.get(tid, {})),
+        "teams_in": snapshot["teams_in"],
+        "solo_queue": snapshot["solo_queue"],
+        "events": _build_waiting_room_events(snapshot, starts_in_seconds),
+    }
+
+# Legacy waiting room snapshot (mock realtime fallback)
+@api_router.get("/tournaments/{tid}/waiting-room-legacy")
 async def waiting_room(tid: str):
     return {
         "tournament_id": tid,
