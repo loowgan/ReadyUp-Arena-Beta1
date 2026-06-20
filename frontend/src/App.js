@@ -24,8 +24,14 @@ const DiscordMark = ({ className = "h-5 w-5" }) => (
 );
 
 const SteamMark = ({ className = "h-5 w-5" }) => (
-  <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-    <path d="M11.979 2C6.47 2 2 6.479 2 12.002c0 4.425 2.876 8.179 6.855 9.504.5.092.683-.217.683-.483 0-.237-.009-.866-.014-1.7-2.788.607-3.377-1.345-3.377-1.345-.455-1.158-1.11-1.466-1.11-1.466-.909-.62.069-.608.069-.608 1.004.071 1.532 1.032 1.532 1.032.892 1.53 2.341 1.088 2.91.833.091-.647.349-1.088.635-1.338-2.226-.254-4.566-1.114-4.566-4.956 0-1.094.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.651 0 0 .84-.269 2.75 1.026A9.564 9.564 0 0 1 12 6.838a9.58 9.58 0 0 1 2.504.337c1.909-1.295 2.748-1.026 2.748-1.026.546 1.379.202 2.398.1 2.651.64.7 1.028 1.594 1.028 2.688 0 3.852-2.343 4.699-4.576 4.947.359.309.679.919.679 1.852 0 1.336-.012 2.414-.012 2.742 0 .269.18.58.688.481A10.008 10.008 0 0 0 22 12.002C22 6.479 17.522 2 11.979 2Z"/>
+  <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    <circle cx="16.9" cy="7.8" r="2.15" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    <circle cx="8.9" cy="15.8" r="2.35" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M10.7 14.7 14.8 10.4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <path d="m6.6 14.7 1.1.4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <circle cx="16.9" cy="7.8" r="0.8" fill="currentColor" />
+    <circle cx="8.9" cy="15.8" r="0.9" fill="currentColor" />
   </svg>
 );
 
