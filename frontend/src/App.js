@@ -6,6 +6,9 @@ import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertT
 import { AuthProvider, useAuth } from "./AuthContext";
 import { API, BACKEND_BASE_URL, WS_BASE_URL } from "./lib/api";
 
+const DISCORD_URL = process.env.REACT_APP_DISCORD_URL || "https://discord.gg/F6RxTWeSmE";
+const STEAM_GROUP_URL = process.env.REACT_APP_STEAM_GROUP_URL || "https://steamcommunity.com/groups/readyuparena";
+
 /* ============== SHARED UI ============== */
 const Logo = ({ size = 40 }) => (
   <div className="flex items-center gap-3" data-testid="brand-logo">
@@ -18,7 +21,7 @@ const NavBar = () => {
   const loc = useLocation();
   const { user } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
-  const testMenuLinks = [
+  const menuLinks = [
     { to: "/", label: "Accueil", icon: Flame },
     { to: "/tournaments", label: "Tournois", icon: Trophy },
     { to: "/teams", label: "Equipes", icon: Users },
@@ -48,33 +51,27 @@ const NavBar = () => {
     <nav className="sticky top-0 z-50 glass border-b border-white/5" data-testid="main-nav">
       <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
         <Link to="/" data-testid="nav-home-logo"><Logo /></Link>
-        <div className="hidden md:flex items-center gap-1">
-          {links.map(l => (
-            <Link key={l.to} to={l.to} data-testid={`nav-link-${l.label.toLowerCase().replace(/\s/g,'-')}`}
-              className={`px-4 py-2 text-sm font-display tracking-widest uppercase transition-colors ${loc.pathname === l.to ? "text-orange-500" : "text-white/70 hover:text-white"}`}>
-              {l.label}
-            </Link>
-          ))}
+        <div className="flex items-center gap-2">
           <div className="relative">
             <button
               type="button"
               onClick={() => setMenuOpen((value) => !value)}
-              className={`px-4 py-2 text-sm font-display tracking-widest uppercase transition-colors flex items-center gap-2 ${testMenuLinks.some((item) => loc.pathname === item.to) ? "text-orange-500" : "text-white/70 hover:text-white"}`}
-              data-testid="nav-test-toggle"
+              className={`px-4 py-2 text-sm font-display tracking-widest uppercase transition-colors flex items-center gap-2 rounded-full border ${menuLinks.some((item) => loc.pathname === item.to) ? "border-orange-500/40 bg-orange-500/10 text-orange-300 shadow-[0_0_18px_rgba(249,115,22,0.18)]" : "border-white/10 text-white/70 hover:text-white hover:border-white/20 hover:bg-white/5"}`}
+              data-testid="nav-menu-toggle"
             >
-              Menu test
+              Menu
               <ChevronRight size={14} className={`transition-transform ${menuOpen ? "rotate-90" : ""}`}/>
             </button>
             {menuOpen && (
-              <div className="absolute top-full left-0 mt-2 min-w-[420px] glass border border-white/10 p-2 z-50" data-testid="nav-test-menu">
+              <div className="absolute top-full left-0 mt-2 min-w-[320px] sm:min-w-[420px] glass border border-white/10 p-2 z-50" data-testid="nav-menu-panel">
                 <div className="grid grid-cols-2 gap-1">
-                {testMenuLinks.map((item) => (
+                {menuLinks.map((item) => (
                   <Link
                     key={item.to}
                     to={item.to}
                     onClick={() => setMenuOpen(false)}
                     className={`flex items-center gap-3 px-3 py-3 text-sm font-display uppercase tracking-wider transition-colors ${loc.pathname === item.to ? "text-orange-500 bg-white/5" : "text-white/75 hover:text-white hover:bg-white/5"}`}
-                    data-testid={`nav-test-${item.label.toLowerCase().replace(/\s/g, "-")}`}
+                    data-testid={`nav-menu-${item.label.toLowerCase().replace(/\s/g, "-")}`}
                   >
                     <item.icon size={14}/>
                     {item.label}
@@ -85,7 +82,7 @@ const NavBar = () => {
                     to="/admin"
                     onClick={() => setMenuOpen(false)}
                     className={`flex items-center gap-3 px-3 py-3 text-sm font-display uppercase tracking-wider transition-colors ${loc.pathname === "/admin" ? "text-orange-500 bg-white/5" : "text-white/75 hover:text-white hover:bg-white/5"}`}
-                    data-testid="nav-test-admin"
+                    data-testid="nav-menu-admin"
                   >
                     <Lock size={14}/>
                     Admin
@@ -95,15 +92,30 @@ const NavBar = () => {
               </div>
             )}
           </div>
-          {user?.is_admin && (
-            <Link
-              to="/admin"
-              data-testid="nav-link-admin"
-              className={`px-4 py-2 text-sm font-display tracking-widest uppercase transition-colors ${loc.pathname === "/admin" ? "text-orange-500" : "text-white/70 hover:text-white"}`}
-            >
-              Admin
-            </Link>
-          )}
+          <a
+            href={DISCORD_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="group inline-flex items-center gap-2 rounded-full border border-[#6fe5c5]/35 bg-[linear-gradient(135deg,rgba(111,229,197,0.18),rgba(34,197,94,0.08))] px-4 py-2 text-[11px] font-display uppercase tracking-[0.24em] text-[#c7fff1] shadow-[0_0_24px_rgba(111,229,197,0.16)] transition-all hover:-translate-y-0.5 hover:border-[#6fe5c5]/60 hover:shadow-[0_0_28px_rgba(111,229,197,0.24)]"
+            data-testid="nav-discord-btn"
+            aria-label="Rejoindre le Discord ReadyUp Arena"
+          >
+            <Radio size={14}/>
+            <span className="hidden sm:inline">Discord</span>
+            <ExternalLink size={12} className="opacity-70 transition-transform group-hover:translate-x-0.5"/>
+          </a>
+          <a
+            href={STEAM_GROUP_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="group inline-flex items-center gap-2 rounded-full border border-[#f8b84e]/35 bg-[linear-gradient(135deg,rgba(248,184,78,0.18),rgba(249,115,22,0.08))] px-4 py-2 text-[11px] font-display uppercase tracking-[0.24em] text-[#ffe2ad] shadow-[0_0_24px_rgba(248,184,78,0.16)] transition-all hover:-translate-y-0.5 hover:border-[#f8b84e]/60 hover:shadow-[0_0_28px_rgba(248,184,78,0.24)]"
+            data-testid="nav-steam-group-btn"
+            aria-label="Rejoindre le groupe Steam ReadyUp Arena"
+          >
+            <Users size={14}/>
+            <span className="hidden sm:inline">Groupe Steam</span>
+            <ExternalLink size={12} className="opacity-70 transition-transform group-hover:translate-x-0.5"/>
+          </a>
         </div>
         <div className="flex items-center gap-2">
           <Link to="/support" className="btn-ghost" data-testid="nav-donate-btn"><Heart size={14}/>Soutenir</Link>
