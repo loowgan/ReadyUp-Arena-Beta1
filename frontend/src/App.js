@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState, useRef } from "react";
 import { BrowserRouter, Routes, Route, Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
-import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertTriangle, Coins, Heart, ChevronRight, Play, Lock, CheckCircle2, Circle, Clock, Tv, Star, TrendingUp, Award, Gamepad2, LogOut, User, Server, Terminal, Plus, Trash2, RefreshCw, Gift, ShoppingBag, Ticket, Package } from "lucide-react";
+import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertTriangle, Coins, Heart, ChevronRight, Play, Lock, CheckCircle2, Circle, Clock, Tv, ExternalLink, Star, TrendingUp, Award, Gamepad2, LogOut, User, Server, Terminal, Plus, Trash2, RefreshCw, Gift, ShoppingBag, Ticket, Package } from "lucide-react";
 import { AuthProvider, useAuth } from "./AuthContext";
 import { API, BACKEND_BASE_URL, WS_BASE_URL } from "./lib/api";
 
