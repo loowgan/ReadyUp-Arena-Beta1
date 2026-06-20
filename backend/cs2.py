@@ -41,6 +41,310 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _coerce_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_matchzy_winner_team(payload: dict[str, Any]) -> Optional[str]:
+    winner = payload.get("winner")
+    raw_team = None
+    if isinstance(winner, dict):
+        raw_team = winner.get("team") or winner.get("side") or winner.get("id") or winner.get("name")
+    elif winner is not None:
+        raw_team = winner
+    if raw_team is None:
+        raw_team = payload.get("winner_team") or payload.get("winning_team")
+    normalized = str(raw_team or "").strip().lower()
+    return normalized if normalized in {"team1", "team2"} else None
+
+
+def _extract_matchzy_series_score(payload: dict[str, Any]) -> dict[str, Optional[int]]:
+    team1 = payload.get("team1") or {}
+    team2 = payload.get("team2") or {}
+    return {
+        "team1": _coerce_int(payload.get("team1_series_score", team1.get("series_score", team1.get("score")))),
+        "team2": _coerce_int(payload.get("team2_series_score", team2.get("series_score", team2.get("score")))),
+    }
+
+
+def _extract_matchzy_map_name(payload: dict[str, Any]) -> Optional[str]:
+    raw = payload.get("map_name") or payload.get("map")
+    value = str(raw or "").strip()
+    return value or None
+
+
+def _build_match_shell_from_config(match_id: str, config: dict[str, Any]) -> dict[str, Any]:
+    team1 = config.get("team1") or {}
+    team2 = config.get("team2") or {}
+    maplist = config.get("maplist") or []
+    return {
+        "matchid": str(match_id),
+        "events": 0,
+        "last_event": None,
+        "ended": False,
+        "updated_at": None,
+        "team1_name": team1.get("name") or "Team 1",
+        "team2_name": team2.get("name") or "Team 2",
+        "team1_score": 0,
+        "team2_score": 0,
+        "map_name": str(maplist[0]).strip() if maplist else "—",
+        "map_number": 0,
+        "source": "config",
+    }
+
+
+def _iter_bracket_matches_doc(bracket_doc: dict):
+    for group in ("W", "L", "GF"):
+        for match_doc in bracket_doc.get("matches", {}).get(group, []):
+            yield match_doc
+
+
+def _find_bracket_match_doc(bracket_doc: dict, match_id: str) -> Optional[dict]:
+    target_id = str(match_id)
+    for match_doc in _iter_bracket_matches_doc(bracket_doc):
+        if str(match_doc.get("id")) == target_id:
+            return match_doc
+    return None
+
+
+async def _find_bracket_doc_by_match_id(db, match_id: str) -> Optional[dict]:
+    raw = await db.brackets.find_one(
+        {"$or": [{"matches.W.id": str(match_id)}, {"matches.L.id": str(match_id)}, {"matches.GF.id": str(match_id)}]}
+    )
+    if raw:
+        return raw
+    docs = await db.brackets.find({}, {"_id": 0}).to_list(200)
+    return next((doc for doc in docs if _find_bracket_match_doc(doc, str(match_id))), None)
+
+
+async def _attach_match_runtime_metadata(db, match_id: str, updates: dict[str, Any]) -> bool:
+    raw = await _find_bracket_doc_by_match_id(db, match_id)
+    if not raw:
+        return False
+    bracket_doc = {k: v for k, v in raw.items() if k != "_id"}
+    match_doc = _find_bracket_match_doc(bracket_doc, str(match_id))
+    if not match_doc:
+        return False
+    for key, value in updates.items():
+        if value is None:
+            continue
+        match_doc[key] = value
+    await db.brackets.replace_one({"tournament_id": raw["tournament_id"]}, bracket_doc, upsert=False)
+    return True
+
+
+async def _build_live_matches_snapshot(db) -> list[dict[str, Any]]:
+    events = await db.matchzy_events.find({"matchid": {"$ne": None}}, {"_id": 0}).sort("received_at", 1).to_list(2000)
+    by_match: dict[str, dict[str, Any]] = {}
+
+    def _extract_score(payload: dict[str, Any]) -> dict[str, Any]:
+        team1 = payload.get("team1") or {}
+        team2 = payload.get("team2") or {}
+        return {
+            "team1_name": team1.get("name") or payload.get("team1_name") or "Team 1",
+            "team2_name": team2.get("name") or payload.get("team2_name") or "Team 2",
+            "team1_score": team1.get("score", payload.get("team1_score", 0)) or 0,
+            "team2_score": team2.get("score", payload.get("team2_score", 0)) or 0,
+            "map_name": payload.get("map_name") or payload.get("map") or "—",
+            "map_number": payload.get("map_number", 0) or 0,
+        }
+
+    defaults = {None, 0, "—", "Team 1", "Team 2"}
+
+    def _merge_latest(acc: dict[str, Any], latest: dict[str, Any]) -> None:
+        for key, value in latest.items():
+            if value not in defaults:
+                acc[key] = value
+            else:
+                acc.setdefault(key, value)
+
+    for event in events:
+        match_id = str(event["matchid"])
+        match_row = by_match.setdefault(
+            match_id,
+            {"matchid": match_id, "events": 0, "last_event": None, "ended": False, "updated_at": None, "source": "matchzy"},
+        )
+        match_row["events"] += 1
+        match_row["last_event"] = event["event"]
+        match_row["updated_at"] = event["received_at"]
+        _merge_latest(match_row, _extract_score(event.get("payload") or {}))
+        if event["event"] == "series_end":
+            match_row["ended"] = True
+
+    active_servers = await db.cs2_servers.find(
+        {"current_match_id": {"$ne": None}},
+        {"_id": 0, "rcon_password": 0},
+    ).to_list(100)
+    for server in active_servers:
+        match_id = str(server.get("current_match_id") or "").strip()
+        if not match_id:
+            continue
+        existing = by_match.get(match_id)
+        if existing and existing.get("ended"):
+            continue
+        if not existing:
+            match_config = await db.matchzy_match_configs.find_one({"match_id": match_id}, {"_id": 0, "config": 1})
+            duel_config = await db.duel_match_configs.find_one({"duel_id": match_id}, {"_id": 0, "config": 1})
+            config = (match_config or duel_config or {}).get("config") or {}
+            existing = _build_match_shell_from_config(match_id, config)
+            existing["updated_at"] = server.get("last_checked_at") or server.get("created_at")
+            existing["launch_status"] = server.get("status")
+            existing["source"] = "server_state"
+            by_match[match_id] = existing
+        existing["server"] = server.get("name")
+        existing["server_id"] = server.get("id")
+        existing["launch_status"] = server.get("status") or existing.get("launch_status")
+        public_server = _public_server(server)
+        existing["connect_url"] = public_server.get("connect_url")
+        existing["spectator_url"] = public_server.get("hltv_url")
+        existing["join_password_required"] = public_server.get("join_password_required", False)
+        existing["spectator_password_required"] = public_server.get("spectator_password_required", False)
+
+    live = [row for row in by_match.values() if not row.get("ended")]
+    return sorted(live, key=lambda item: item.get("updated_at") or "", reverse=True)
+
+
+async def build_live_matches_snapshot(db) -> list[dict[str, Any]]:
+    return await _build_live_matches_snapshot(db)
+
+
+def extract_matchzy_winner_team(payload: dict[str, Any]) -> Optional[str]:
+    return _extract_matchzy_winner_team(payload)
+
+
+async def apply_matchzy_bracket_result(db, journal, match_id: str, payload: dict[str, Any], report_match_fn=report_match) -> bool:
+    winner_team = _extract_matchzy_winner_team(payload)
+    if winner_team not in {"team1", "team2"}:
+        return False
+    raw = await _find_bracket_doc_by_match_id(db, str(match_id))
+    if not raw:
+        return False
+    bracket_doc = {k: v for k, v in raw.items() if k != "_id"}
+    match_doc = _find_bracket_match_doc(bracket_doc, str(match_id))
+    if not match_doc or match_doc.get("winner_id") or not match_doc.get("a") or not match_doc.get("b"):
+        return False
+    winner_id = match_doc["a"]["id"] if winner_team == "team1" else match_doc["b"]["id"]
+    report_match_fn(bracket_doc, str(match_id), str(winner_id))
+    resolved_match = _find_bracket_match_doc(bracket_doc, str(match_id))
+    if resolved_match:
+        resolved_match["result_source"] = "matchzy_webhook"
+        resolved_match["result_received_at"] = _now_iso()
+        resolved_match["launch_status"] = "finished"
+        resolved_match["last_event"] = str(payload.get("event") or "series_end")
+        resolved_match["series_score"] = _extract_matchzy_series_score(payload)
+        if _extract_matchzy_map_name(payload):
+            resolved_match["current_map"] = _extract_matchzy_map_name(payload)
+    current_version = int(raw.get("version", 0) or 0)
+    bracket_doc["version"] = current_version + 1
+    await db.brackets.replace_one({"tournament_id": raw["tournament_id"]}, bracket_doc, upsert=False)
+    await journal(
+        "bracket_result_auto",
+        None,
+        {"tournament_id": raw["tournament_id"], "match_id": str(match_id), "winner_team": winner_team, "winner_id": str(winner_id)},
+    )
+    return True
+
+
+async def apply_matchzy_duel_result(db, journal, match_id: str, payload: dict[str, Any]) -> bool:
+    winner_team = _extract_matchzy_winner_team(payload)
+    if winner_team not in {"team1", "team2"}:
+        return False
+    duel = await db.duels.find_one({"id": str(match_id)}, {"_id": 0})
+    if not duel or not duel.get("opponent_id") or duel.get("status") == "closed":
+        return False
+    winner_id = duel["creator_id"] if winner_team == "team1" else duel["opponent_id"]
+    winner_pseudo = duel["creator_pseudo"] if winner_team == "team1" else duel.get("opponent_pseudo")
+    result = await db.duels.update_one(
+        {"id": str(match_id), "status": {"$ne": "closed"}},
+        {"$set": {
+            "status": "closed",
+            "winner_id": winner_id,
+            "winner_pseudo": winner_pseudo,
+            "closed_at": _now_iso(),
+            "result_source": "matchzy_webhook",
+            "launch_status": "finished",
+            "series_score": _extract_matchzy_series_score(payload),
+            "last_event": str(payload.get("event") or "series_end"),
+        }},
+    )
+    if result.modified_count == 0:
+        return False
+    await db.users.update_one({"id": winner_id}, {"$inc": {"tokens": int(duel.get("stake", 0)) * 2}})
+    await journal(
+        "duel_result_auto",
+        None,
+        {"duel_id": str(match_id), "winner_team": winner_team, "winner_id": winner_id},
+    )
+    return True
+
+
+async def _apply_matchzy_runtime_state(db, match_id: str, payload: dict[str, Any]) -> None:
+    event_name = str(payload.get("event") or "unknown").strip().lower()
+    now_iso = _now_iso()
+    map_name = _extract_matchzy_map_name(payload)
+    score = _extract_matchzy_series_score(payload)
+    is_terminal = event_name == "series_end"
+    started_at = now_iso if event_name in {"series_start", "map_start"} else None
+
+    server_updates: dict[str, Any] = {
+        "last_match_id": str(match_id),
+        "last_checked_at": now_iso,
+        "status": "online" if is_terminal else "live",
+    }
+    if map_name:
+        server_updates["current_map"] = map_name
+    if is_terminal:
+        server_updates.update(
+            {
+                "current_match_id": None,
+                "current_tournament_id": None,
+                "current_bracket_match_id": None,
+                "current_duel_id": None,
+            }
+        )
+    else:
+        server_updates["current_match_id"] = str(match_id)
+    await db.cs2_servers.update_many(
+        {"$or": [{"current_match_id": str(match_id)}, {"last_match_id": str(match_id)}]},
+        {"$set": server_updates},
+    )
+
+    await _attach_match_runtime_metadata(
+        db,
+        str(match_id),
+        {
+            "launch_status": "finished" if is_terminal else "live",
+            "last_event": event_name,
+            "updated_at": now_iso,
+            "started_at": started_at,
+            "series_score": score,
+            "current_map": map_name,
+        },
+    )
+
+    duel_updates: dict[str, Any] = {
+        "launch_status": "finished" if is_terminal else "live",
+        "last_event": event_name,
+        "updated_at": now_iso,
+        "series_score": score,
+    }
+    if map_name:
+        duel_updates["current_map"] = map_name
+    if not is_terminal:
+        duel_updates["status"] = "live"
+        if started_at:
+            duel_updates["started_at"] = started_at
+    await db.duels.update_many(
+        {"id": str(match_id), "status": {"$ne": "closed"}},
+        {"$set": duel_updates},
+    )
+
+
 def _rcon_exec(host: str, port: int, password: str, command: str, timeout: float = 8.0) -> str:
     """Blocking Source-RCON call. Run inside a thread via asyncio.to_thread."""
     with RconClient(host, int(port), passwd=password, timeout=timeout) as client:
@@ -113,13 +417,17 @@ def _public_server(doc: dict) -> dict:
     public_host = clean.get("public_host") or clean.get("host")
     game_port = clean.get("game_port") or clean.get("port")
     gotv_port = clean.get("gotv_port")
+    join_password_required = bool(doc.get("join_password"))
+    spectator_password_required = bool(doc.get("gotv_password"))
     clean["provider"] = clean.get("provider") or "custom"
     clean["control_mode"] = _server_control_mode(doc)
     clean["public_host"] = public_host
     clean["game_port"] = int(game_port) if game_port else None
     clean["gotv_port"] = int(gotv_port) if gotv_port else None
-    clean["connect_url"] = _optional_steam_connect(public_host, clean.get("game_port"))
-    clean["hltv_url"] = _optional_steam_connect(public_host, clean.get("gotv_port"))
+    clean["join_password_required"] = join_password_required
+    clean["spectator_password_required"] = spectator_password_required
+    clean["connect_url"] = None if join_password_required else _optional_steam_connect(public_host, clean.get("game_port"))
+    clean["hltv_url"] = None if spectator_password_required else _optional_steam_connect(public_host, clean.get("gotv_port"))
     clean["last_match_id"] = clean.get("last_match_id")
     clean["current_tournament_id"] = clean.get("current_tournament_id")
     clean["current_bracket_match_id"] = clean.get("current_bracket_match_id")
@@ -292,6 +600,10 @@ def build_server_connect_url(srv: dict, *, spectator: bool = False) -> Optional[
     password_key = "gotv_password" if spectator else "join_password"
     password = _dec(srv[password_key]) if srv.get(password_key) else None
     return _private_steam_connect(host, port, password)
+
+
+def public_server_payload(srv: dict) -> dict:
+    return _public_server(srv)
 
 
 def build_duel_matchzy_config(
@@ -641,75 +953,10 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
         return bracket_doc
 
     async def _try_apply_matchzy_result(match_id: str, payload: dict[str, Any]) -> bool:
-        winner_team = str((payload.get("winner") or {}).get("team") or "").strip().lower()
-        if winner_team not in {"team1", "team2"}:
-            return False
-        raw = await db.brackets.find_one(
-            {"$or": [{"matches.W.id": str(match_id)}, {"matches.L.id": str(match_id)}, {"matches.GF.id": str(match_id)}]}
-        )
-        if not raw:
-            candidates = await db.brackets.find({}, {"_id": 0}).to_list(200)
-            raw = next((doc for doc in candidates if _find_bracket_match(doc, str(match_id))), None)
-        if not raw:
-            return False
-        bracket_doc = {k: v for k, v in raw.items() if k != "_id"}
-        match_doc = _find_bracket_match(bracket_doc, str(match_id))
-        if not match_doc or match_doc.get("winner_id") or not match_doc.get("a") or not match_doc.get("b"):
-            return False
-        winner_id = match_doc["a"]["id"] if winner_team == "team1" else match_doc["b"]["id"]
-        report_match(bracket_doc, str(match_id), str(winner_id))
-        resolved_match = _find_bracket_match(bracket_doc, str(match_id))
-        if resolved_match:
-            resolved_match["result_source"] = "matchzy_webhook"
-            resolved_match["result_received_at"] = _now_iso()
-            resolved_match["launch_status"] = "finished"
-            resolved_match["series_score"] = {
-                "team1": payload.get("team1_series_score"),
-                "team2": payload.get("team2_series_score"),
-            }
-        current_version = int(raw.get("version", 0) or 0)
-        bracket_doc["version"] = current_version + 1
-        await db.brackets.replace_one({"tournament_id": raw["tournament_id"]}, bracket_doc, upsert=False)
-        await journal(
-            "bracket_result_auto",
-            None,
-            {"tournament_id": raw["tournament_id"], "match_id": str(match_id), "winner_team": winner_team, "winner_id": str(winner_id)},
-        )
-        return True
+        return await apply_matchzy_bracket_result(db, journal, str(match_id), payload, report_match_fn=report_match)
 
     async def _try_apply_duel_matchzy_result(match_id: str, payload: dict[str, Any]) -> bool:
-        winner_team = str((payload.get("winner") or {}).get("team") or "").strip().lower()
-        if winner_team not in {"team1", "team2"}:
-            return False
-        duel = await db.duels.find_one({"id": str(match_id)}, {"_id": 0})
-        if not duel or not duel.get("opponent_id") or duel.get("status") == "closed":
-            return False
-        winner_id = duel["creator_id"] if winner_team == "team1" else duel["opponent_id"]
-        winner_pseudo = duel["creator_pseudo"] if winner_team == "team1" else duel.get("opponent_pseudo")
-        result = await db.duels.update_one(
-            {"id": str(match_id), "status": {"$ne": "closed"}},
-            {"$set": {
-                "status": "closed",
-                "winner_id": winner_id,
-                "winner_pseudo": winner_pseudo,
-                "closed_at": _now_iso(),
-                "result_source": "matchzy_webhook",
-                "launch_status": "finished",
-                "series_score": {
-                    "team1": payload.get("team1_series_score"),
-                    "team2": payload.get("team2_series_score"),
-                },
-            }},
-        )
-        if result.modified_count == 0:
-            return False
-        await db.users.update_one({"id": winner_id}, {"$inc": {"tokens": int(duel.get("stake", 0)) * 2}})
-        await journal(
-            "duel_result_auto",
-            None,
-            {"duel_id": str(match_id), "winner_team": winner_team, "winner_id": winner_id},
-        )
-        return True
+        return await apply_matchzy_duel_result(db, journal, str(match_id), payload)
 
     @router.post("/servers", dependencies=[Depends(get_admin_user)])
     async def create_server(req: ServerReq, user=Depends(get_admin_user)):
@@ -974,7 +1221,7 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
                 "server_host": srv.get("public_host") or srv.get("host"),
                 "server_game_port": srv.get("game_port") or srv.get("port"),
                 "matchzy_config_url": config_url,
-                "launch_status": "queued" if result["queued"] else "live",
+                "launch_status": "launch_pending" if result["queued"] else "live",
                 "launched_at": _now_iso(),
                 "num_maps": req.num_maps,
                 "players_per_team": req.players_per_team,
@@ -1068,7 +1315,49 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
         if command.get("kind") == "status_ping" and req.status == "completed":
             server_updates["status"] = "online"
             server_updates["last_checked_at"] = _now_iso()
+        elif command.get("kind") in {"launch_bracket_match", "launch_duel_match", "setup_match"}:
+            server_updates["last_checked_at"] = _now_iso()
+            if req.status == "completed":
+                server_updates["status"] = "live"
+            else:
+                server_updates.update(
+                    {
+                        "status": "online",
+                        "current_match_id": None,
+                        "current_tournament_id": None,
+                        "current_bracket_match_id": None,
+                        "current_duel_id": None,
+                    }
+                )
         await db.cs2_servers.update_one({"id": srv["id"]}, {"$set": server_updates})
+        metadata = command.get("metadata") or {}
+        if command.get("kind") == "launch_bracket_match":
+            match_id = str(metadata.get("match_id") or "").strip()
+            if match_id:
+                await _attach_match_runtime_metadata(
+                    db,
+                    match_id,
+                    {
+                        "launch_status": "live" if req.status == "completed" else "failed",
+                        "updated_at": _now_iso(),
+                        "started_at": _now_iso() if req.status == "completed" else None,
+                        "launch_error": None if req.status == "completed" else (req.output or "Bridge command failed"),
+                    },
+                )
+        elif command.get("kind") == "launch_duel_match":
+            duel_id = str(metadata.get("duel_id") or "").strip()
+            if duel_id:
+                duel_updates = {
+                    "launch_status": "live" if req.status == "completed" else "failed",
+                    "updated_at": _now_iso(),
+                    "launch_error": None if req.status == "completed" else (req.output or "Bridge command failed"),
+                }
+                if req.status == "completed":
+                    duel_updates["status"] = "live"
+                    duel_updates["started_at"] = _now_iso()
+                else:
+                    duel_updates["status"] = "launch_failed"
+                await db.duels.update_one({"id": duel_id, "status": {"$ne": "closed"}}, {"$set": duel_updates})
         return {"ok": True, "command_id": command_id}
 
     # ---------- MatchZy webhook listener ----------
@@ -1091,19 +1380,8 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
             "received_at": _now_iso(),
         }
         await db.matchzy_events.insert_one(event)
-        # Reflect terminal series state on the bound server, if any
-        if payload.get("event") == "series_end" and payload.get("matchid"):
-            await db.cs2_servers.update_one(
-                {"current_match_id": str(payload.get("matchid"))},
-                {"$set": {
-                    "status": "online",
-                    "last_match_id": str(payload.get("matchid")),
-                    "current_match_id": None,
-                    "current_tournament_id": None,
-                    "current_bracket_match_id": None,
-                    "current_duel_id": None,
-                }},
-            )
+        if payload.get("matchid") is not None:
+            await _apply_matchzy_runtime_state(db, str(payload.get("matchid")), payload)
         if payload.get("event") == "series_end" and payload.get("matchid"):
             await _try_apply_matchzy_result(str(payload.get("matchid")), payload)
             await _try_apply_duel_matchzy_result(str(payload.get("matchid")), payload)

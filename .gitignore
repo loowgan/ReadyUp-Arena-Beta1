@@ -92,6 +92,8 @@ android-sdk/
 .env
 .env.*
 *.env
+!backend/.env.example
+!frontend/.env.example
 backend/cloudrun.env
 backend/cloudrun.env.yaml
 credentials.json

@@ -47,7 +47,13 @@ services:
         value: "false"
       - key: TWITCH_CHANNEL
         value: esl_csgo
+      - key: TWITCH_CLIENT_ID
+        value: ""
+      - key: TWITCH_CLIENT_SECRET
+        value: ""
       - key: MATCHZY_WEBHOOK_SECRET
+        generateValue: true
+      - key: MATCHZY_CONFIG_TOKEN
         generateValue: true
       - key: RCON_ENC_KEY
         sync: false

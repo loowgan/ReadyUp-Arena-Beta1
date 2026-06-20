@@ -9,6 +9,12 @@ import uuid
 import pytest
 import requests
 
+RUN_LIVE_API_TESTS = os.environ.get("RUN_READYUP_LIVE_TESTS") == "1"
+pytestmark = pytest.mark.skipif(
+    not RUN_LIVE_API_TESTS,
+    reason="Live API integration tests are disabled by default. Set RUN_READYUP_LIVE_TESTS=1 to run them.",
+)
+
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8000").rstrip("/")
 API = f"{BASE_URL}/api"
 

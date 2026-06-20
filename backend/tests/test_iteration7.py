@@ -16,7 +16,13 @@ from pathlib import Path
 load_dotenv(Path(__file__).resolve().parents[2] / "frontend" / ".env")
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+RUN_LIVE_API_TESTS = os.environ.get("RUN_READYUP_LIVE_TESTS") == "1"
+pytestmark = pytest.mark.skipif(
+    not RUN_LIVE_API_TESTS,
+    reason="Live API integration tests are disabled by default. Set RUN_READYUP_LIVE_TESTS=1 to run them.",
+)
+
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8000").rstrip("/")
 API = f"{BASE_URL}/api"
 
 ADMIN_EMAIL = os.environ.get("TEST_ADMIN_EMAIL") or os.environ.get("SEED_ADMIN_EMAIL", "admin@example.com")

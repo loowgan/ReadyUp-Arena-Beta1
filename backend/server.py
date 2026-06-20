@@ -52,12 +52,14 @@ import redis_state as rs
 from seed_data import seed_all
 from cs2 import (
     backend_public_base,
+    build_live_matches_snapshot,
     build_cs2_router,
     build_duel_matchzy_config,
     build_server_connect_url,
     configure_matchzy_remote_log,
     matchzy_config_header,
     matchzy_load_url_command,
+    public_server_payload,
     run_server_command,
 )
 from bracket import build_bracket_router
@@ -65,10 +67,15 @@ from email_service import send_email, reset_email_html
 
 app = FastAPI(title="ReadyUp Arena API")
 api_router = APIRouter(prefix="/api")
+logger = logging.getLogger(__name__)
 
 DEFAULT_FRONTEND_URL = "http://localhost:3000"
 DEFAULT_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 DEV_JWT_SECRET = "readyup-arena-dev-secret-change-in-prod"
+TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+TWITCH_HELIX_BASE_URL = "https://api.twitch.tv/helix"
+_twitch_app_token: Optional[str] = None
+_twitch_app_token_expires_at: float = 0.0
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -85,6 +92,126 @@ def env_text(name: str, default: str = "") -> str:
 def parse_csv_env(name: str, default: str) -> list[str]:
     raw = os.environ.get(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _twitch_fallback_payload(channel: str, configured: bool, message: str, source: str) -> dict[str, Any]:
+    return {
+        "channel": channel,
+        "display_name": channel,
+        "live": False,
+        "configured": configured,
+        "source": source,
+        "title": None,
+        "viewers": None,
+        "game": "Counter-Strike 2",
+        "started_at": None,
+        "thumbnail_url": None,
+        "avatar_url": None,
+        "url": f"https://twitch.tv/{channel}",
+        "status_message": message,
+    }
+
+
+async def _get_twitch_app_access_token(client_http: httpx.AsyncClient) -> Optional[str]:
+    global _twitch_app_token, _twitch_app_token_expires_at
+
+    if _twitch_app_token and time.time() < (_twitch_app_token_expires_at - 60):
+        return _twitch_app_token
+
+    client_id = env_text("TWITCH_CLIENT_ID")
+    client_secret = env_text("TWITCH_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return None
+
+    response = await client_http.post(
+        TWITCH_TOKEN_URL,
+        data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "grant_type": "client_credentials",
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    token = str(payload.get("access_token") or "").strip()
+    if not token:
+        return None
+
+    _twitch_app_token = token
+    _twitch_app_token_expires_at = time.time() + int(payload.get("expires_in") or 0)
+    return token
+
+
+async def _fetch_twitch_live_snapshot() -> dict[str, Any]:
+    channel = env_text("TWITCH_CHANNEL", "esl_csgo")
+    if not env_flag("FEATURE_TWITCH", True):
+        return _twitch_fallback_payload(channel, False, "Integration Twitch desactivee.", "disabled")
+
+    client_id = env_text("TWITCH_CLIENT_ID")
+    client_secret = env_text("TWITCH_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return _twitch_fallback_payload(
+            channel,
+            False,
+            "Ajoute TWITCH_CLIENT_ID et TWITCH_CLIENT_SECRET pour obtenir l'etat live reel.",
+            "unconfigured",
+        )
+
+    async with httpx.AsyncClient(timeout=10) as client_http:
+        token = await _get_twitch_app_access_token(client_http)
+        if not token:
+            return _twitch_fallback_payload(channel, False, "Impossible d'obtenir un token Twitch.", "auth_error")
+
+        headers = {"Client-Id": client_id, "Authorization": f"Bearer {token}"}
+        stream_response, user_response = await asyncio.gather(
+            client_http.get(f"{TWITCH_HELIX_BASE_URL}/streams", headers=headers, params={"user_login": channel}),
+            client_http.get(f"{TWITCH_HELIX_BASE_URL}/users", headers=headers, params={"login": channel}),
+        )
+        stream_response.raise_for_status()
+        user_response.raise_for_status()
+
+    stream = (stream_response.json().get("data") or [None])[0]
+    user = (user_response.json().get("data") or [None])[0]
+    display_name = (user or {}).get("display_name") or channel
+    avatar_url = (user or {}).get("profile_image_url")
+    channel_url = f"https://twitch.tv/{channel}"
+
+    if not stream:
+        return {
+            "channel": channel,
+            "display_name": display_name,
+            "live": False,
+            "configured": True,
+            "source": "twitch_api",
+            "title": None,
+            "viewers": None,
+            "game": "Counter-Strike 2",
+            "started_at": None,
+            "thumbnail_url": None,
+            "avatar_url": avatar_url,
+            "url": channel_url,
+            "status_message": "Chaine hors ligne actuellement.",
+        }
+
+    thumbnail_url = stream.get("thumbnail_url")
+    if isinstance(thumbnail_url, str):
+        thumbnail_url = thumbnail_url.replace("{width}", "1280").replace("{height}", "720")
+
+    return {
+        "channel": stream.get("user_login") or channel,
+        "display_name": stream.get("user_name") or display_name,
+        "live": True,
+        "configured": True,
+        "source": "twitch_api",
+        "title": stream.get("title"),
+        "viewers": stream.get("viewer_count"),
+        "game": stream.get("game_name") or "Counter-Strike 2",
+        "started_at": stream.get("started_at"),
+        "thumbnail_url": thumbnail_url,
+        "avatar_url": avatar_url,
+        "url": channel_url,
+        "status_message": "Live detecte via Twitch API.",
+    }
 
 # ============= AUTH =============
 JWT_SECRET = os.environ.get("JWT_SECRET", DEV_JWT_SECRET)
@@ -744,15 +871,36 @@ async def reset_password(req: ResetReq):
 @api_router.get("/config")
 async def get_config():
     stripe_enabled = env_flag("FEATURE_STRIPE_DONATIONS", True) and bool(STRIPE_API_KEY)
+    twitch_enabled = env_flag("FEATURE_TWITCH", True)
+    twitch_ready = bool(env_text("TWITCH_CLIENT_ID") and env_text("TWITCH_CLIENT_SECRET"))
+    backend_public_url = env_text("BACKEND_PUBLIC_URL")
+    matchzy_webhook_ready = bool(env_text("MATCHZY_WEBHOOK_SECRET"))
+    matchzy_config_ready = bool(env_text("MATCHZY_CONFIG_TOKEN"))
+    email_ready = bool(env_text("RESEND_API_KEY") and env_text("SENDER_EMAIL"))
     return {
         "app_name": "ReadyUp Arena",
         "tagline": "Formez votre équipe. Entrez dans l'arène. Devenez champion.",
         "feature_steam_auth": env_flag("FEATURE_STEAM_AUTH", True),
-        "feature_twitch": env_flag("FEATURE_TWITCH", True),
+        "feature_twitch": twitch_enabled,
         "feature_stripe": stripe_enabled,
         "feature_paypal": env_flag("FEATURE_PAYPAL", True),
         "feature_csstats": env_flag("FEATURE_CSSTATS", True),
         "twitch_channel": os.environ.get("TWITCH_CHANNEL", "esl_csgo"),
+        "integrations": {
+            "twitch": {
+                "enabled": twitch_enabled,
+                "configured": twitch_ready,
+                "channel": os.environ.get("TWITCH_CHANNEL", "esl_csgo"),
+            },
+            "matchzy": {
+                "public_base_configured": bool(backend_public_url),
+                "webhook_secret_configured": matchzy_webhook_ready,
+                "config_token_configured": matchzy_config_ready,
+            },
+            "email": {
+                "configured": email_ready,
+            },
+        },
     }
 
 @app.get("/health/live")
@@ -2585,8 +2733,13 @@ REPORT_CARD_THRESHOLD = 3
 
 @api_router.get("/twitch/live")
 async def twitch_live():
-    ch = os.environ.get("TWITCH_CHANNEL", "esl_csgo")
-    return {"channel": ch, "live": True, "title": "BLAST Major CS2 — Quarterfinals", "viewers": 84210, "game": "Counter-Strike 2"}
+    channel = env_text("TWITCH_CHANNEL", "esl_csgo")
+    configured = bool(env_text("TWITCH_CLIENT_ID") and env_text("TWITCH_CLIENT_SECRET"))
+    try:
+        return await _fetch_twitch_live_snapshot()
+    except Exception as exc:
+        logger.warning("Twitch live lookup failed: %s", exc)
+        return _twitch_fallback_payload(channel, configured, "API Twitch temporairement indisponible.", "api_error")
 
 # Steam OpenID (REAL — validates signature against Steam servers)
 STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
@@ -2955,22 +3108,7 @@ def _merge_latest(acc: dict, sc: dict):
 
 @api_router.get("/matches/live")
 async def live_matches():
-    events = await db.matchzy_events.find({"matchid": {"$ne": None}}, {"_id": 0}).sort("received_at", 1).to_list(2000)
-    by_match: dict = {}
-    for e in events:
-        mid = str(e["matchid"])
-        m = by_match.setdefault(mid, {"matchid": mid, "events": 0, "last_event": None, "ended": False, "updated_at": None})
-        m["events"] += 1
-        m["last_event"] = e["event"]
-        m["updated_at"] = e["received_at"]
-        _merge_latest(m, _extract_score(e.get("payload") or {}))
-        if e["event"] == "series_end":
-            m["ended"] = True
-    live = [m for m in by_match.values() if not m["ended"]]
-    for m in live:
-        srv = await db.cs2_servers.find_one({"current_match_id": m["matchid"]}, {"_id": 0, "rcon_password": 0})
-        m["server"] = srv["name"] if srv else None
-    return sorted(live, key=lambda x: x["updated_at"] or "", reverse=True)
+    return await build_live_matches_snapshot(db)
 
 
 async def _match_config_participants(match_id: str) -> list[dict]:
@@ -3019,6 +3157,45 @@ async def _match_config_participants(match_id: str) -> list[dict]:
                     "linked_account": bool(user_doc),
                 })
     return participants
+
+
+async def _match_exists(match_id: str) -> bool:
+    match_id = str(match_id)
+    if await db.matchzy_events.find_one({"matchid": match_id}, {"_id": 1}):
+        return True
+    if await db.matchzy_match_configs.find_one({"match_id": match_id}, {"_id": 1}):
+        return True
+    if await db.duel_match_configs.find_one({"duel_id": match_id}, {"_id": 1}):
+        return True
+    if await db.cs2_servers.find_one(
+        {"$or": [{"current_match_id": match_id}, {"last_match_id": match_id}]},
+        {"_id": 1},
+    ):
+        return True
+    all_events = await db.matchzy_events.find({}, {"_id": 0, "matchid": 1}).limit(2000).to_list(2000)
+    if any(str(doc.get("matchid")) == match_id for doc in all_events):
+        return True
+    return False
+
+
+async def _match_server_doc(match_id: str) -> Optional[dict]:
+    return await db.cs2_servers.find_one(
+        {"$or": [{"current_match_id": str(match_id)}, {"last_match_id": str(match_id)}]},
+        {"_id": 0},
+    )
+
+
+def _user_can_access_match_server(user: dict, participants: list[dict]) -> bool:
+    if is_admin_email(user.get("email")):
+        return True
+    user_id = str(user.get("id") or "").strip()
+    steam_id = str(user.get("steam_id") or "").strip()
+    for participant in participants:
+        if user_id and participant.get("user_id") == user_id:
+            return True
+        if steam_id and participant.get("steam_id") == steam_id:
+            return True
+    return False
 
 
 def _match_report_target_required(kind: str) -> bool:
@@ -3243,22 +3420,32 @@ async def match_detail(matchid: str):
     if not events:
         allev = await db.matchzy_events.find({}, {"_id": 0}).sort("received_at", 1).to_list(2000)
         events = [e for e in allev if str(e.get("matchid")) == str(matchid)]
-    if not events:
+    server = await _match_server_doc(str(matchid))
+    stored_match = await db.matchzy_match_configs.find_one({"match_id": str(matchid)}, {"_id": 0, "config": 1})
+    stored_duel = await db.duel_match_configs.find_one({"duel_id": str(matchid)}, {"_id": 0, "config": 1})
+    stored_config = (stored_match or stored_duel or {}).get("config") or {}
+    if not events and not stored_config and not server:
         raise HTTPException(404, "Match introuvable")
     latest: dict = {}
     for e in events:
         _merge_latest(latest, _extract_score(e.get("payload") or {}))
-    server = await db.cs2_servers.find_one(
-        {"$or": [{"current_match_id": str(matchid)}, {"last_match_id": str(matchid)}]},
-        {"_id": 0, "rcon_password": 0},
-    )
+    if not latest and stored_config:
+        shell = {
+            "team1_name": (stored_config.get("team1") or {}).get("name") or "Team 1",
+            "team2_name": (stored_config.get("team2") or {}).get("name") or "Team 2",
+            "team1_score": 0,
+            "team2_score": 0,
+            "map_name": ((stored_config.get("maplist") or ["—"])[0]),
+            "map_number": 0,
+        }
+        latest.update(shell)
     participants = await _match_config_participants(str(matchid))
     return {
         "matchid": str(matchid),
         "summary": latest,
         "ended": any(e["event"] == "series_end" for e in events),
         "timeline": events,
-        "server": server,
+        "server": public_server_payload(server) if server else None,
         "participants": participants,
     }
 
@@ -3269,13 +3456,51 @@ async def list_match_reports(matchid: str, user=Depends(get_current_user)):
     return docs
 
 
+@api_router.post("/matches/{matchid}/join", dependencies=[Depends(get_current_user)])
+async def join_match_server(matchid: str, user=Depends(get_current_user)):
+    if not await _match_exists(str(matchid)):
+        raise HTTPException(404, "Match introuvable")
+    server = await _match_server_doc(str(matchid))
+    if not server or str(server.get("current_match_id") or "").strip() != str(matchid):
+        raise HTTPException(409, "Le serveur du match n'est pas encore pret")
+    participants = await _match_config_participants(str(matchid))
+    if not _user_can_access_match_server(user, participants):
+        raise HTTPException(403, "Acces reserve aux joueurs de ce match")
+    join_url = build_server_connect_url(server, spectator=False)
+    if not join_url:
+        raise HTTPException(409, "Connexion Steam indisponible pour ce match")
+    return {
+        "ok": True,
+        "join_url": join_url,
+        "server_name": server.get("name"),
+        "map": server.get("current_map"),
+    }
+
+
+@api_router.post("/matches/{matchid}/spectate", dependencies=[Depends(get_current_user)])
+async def spectate_match_server(matchid: str, user=Depends(get_current_user)):
+    if not await _match_exists(str(matchid)):
+        raise HTTPException(404, "Match introuvable")
+    server = await _match_server_doc(str(matchid))
+    if not server or not server.get("gotv_port"):
+        raise HTTPException(404, "Spectateur HLTV indisponible pour ce match")
+    if str(server.get("current_match_id") or "").strip() != str(matchid):
+        raise HTTPException(409, "Le flux spectateur n'est pas encore pret")
+    spectator_url = build_server_connect_url(server, spectator=True)
+    if not spectator_url:
+        raise HTTPException(409, "Connexion spectateur indisponible pour ce match")
+    return {
+        "ok": True,
+        "spectator_url": spectator_url,
+        "server_name": server.get("name"),
+        "map": server.get("current_map"),
+    }
+
+
 @api_router.post("/matches/{matchid}/reports", dependencies=[Depends(get_current_user)])
 async def create_match_report(matchid: str, req: MatchReportReq, user=Depends(get_current_user)):
-    exists = await db.matchzy_events.find_one({"matchid": str(matchid)}, {"_id": 1})
-    if not exists:
-        all_events = await db.matchzy_events.find({}, {"_id": 0, "matchid": 1}).limit(2000).to_list(2000)
-        if not any(str(doc.get("matchid")) == str(matchid) for doc in all_events):
-            raise HTTPException(404, "Match introuvable")
+    if not await _match_exists(str(matchid)):
+        raise HTTPException(404, "Match introuvable")
 
     target = await _resolve_match_report_target(str(matchid), req.target_user_id, req.target_steam_id)
     if _match_report_target_required(req.kind) and not target:
@@ -3923,8 +4148,17 @@ async def report_result(duel_id: str, req: DuelResultReq, reporter=Depends(get_c
         raise HTTPException(400, "Le gagnant doit être l'un des 2 participants")
     pot = duel["stake"] * 2
     await db.users.update_one({"id": req.winner_id}, {"$inc": {"tokens": pot}})
+    winner_pseudo = duel["creator_pseudo"] if req.winner_id == duel["creator_id"] else duel.get("opponent_pseudo")
     await db.duels.update_one({"id": duel_id, "status": "in_progress"},
-        {"$set": {"status": "closed", "winner_id": req.winner_id, "closed_at": datetime.now(timezone.utc).isoformat()}})
+        {"$set": {
+            "status": "closed",
+            "winner_id": req.winner_id,
+            "winner_pseudo": winner_pseudo,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "result_source": "manual_report",
+        }})
+    if duel.get("server_id"):
+        await _release_duel_server(duel["server_id"], duel_id)
     await journal("duel_closed", reporter["id"], {"duel_id": duel_id, "winner": req.winner_id, "pot": pot})
     return {"ok": True, "winner_id": req.winner_id, "pot_awarded": pot}
 
@@ -3942,7 +4176,6 @@ app.add_middleware(
 )
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 async def _scheduler_loop():
     """Polls the Redis job queue every second and applies due tournament jobs."""
@@ -4025,6 +4258,14 @@ async def _startup():
         logger.warning("JWT_SECRET is using the insecure development default. Set a strong production secret before deploying.")
     if not os.environ.get("RCON_ENC_KEY"):
         logger.warning("RCON_ENC_KEY is missing. RCON passwords will not be encrypted at rest.")
+    if not env_text("BACKEND_PUBLIC_URL"):
+        logger.warning("BACKEND_PUBLIC_URL is missing. Steam OpenID and MatchZy config URLs will be unreliable outside local development.")
+    if not env_text("MATCHZY_WEBHOOK_SECRET"):
+        logger.warning("MATCHZY_WEBHOOK_SECRET is missing. MatchZy webhook authentication is not secured.")
+    if not env_text("MATCHZY_CONFIG_TOKEN"):
+        logger.warning("MATCHZY_CONFIG_TOKEN is missing. MatchZy config fetch URLs are not protected.")
+    if env_flag("FEATURE_TWITCH", True) and not (env_text("TWITCH_CLIENT_ID") and env_text("TWITCH_CLIENT_SECRET")):
+        logger.info("Twitch live status fallback active: set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET for real Twitch API data.")
     if not STRIPE_API_KEY:
         logger.info("Stripe donations are disabled: STRIPE_API_KEY is not configured.")
     await _seed_admin_user()

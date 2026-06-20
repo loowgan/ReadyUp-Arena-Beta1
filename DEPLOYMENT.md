@@ -17,7 +17,7 @@ Si tu refuses toute activation de facturation Google Cloud, utilise plutot :
 - base de donnees : `MongoDB Atlas Free`
 - Redis : `Upstash Free`
 
-Le fichier [render.yaml](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/render.yaml) prepare le backend pour Render.
+Le fichier [render.yaml](render.yaml) prepare le backend pour Render.
 
 Limites a accepter :
 
@@ -61,11 +61,11 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ## 2. Google Cloud Run
 
-Le backend est prevu pour etre construit depuis [backend/Dockerfile](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/backend/Dockerfile).
+Le backend est prevu pour etre construit depuis [backend/Dockerfile](backend/Dockerfile).
 
 ### Option A : Cloud Build
 
-Le fichier [cloudbuild.yaml](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/cloudbuild.yaml) deploie automatiquement l'API.
+Le fichier [cloudbuild.yaml](cloudbuild.yaml) deploie automatiquement l'API.
 
 Commande typique :
 
@@ -87,9 +87,9 @@ gcloud run deploy readyup-arena-api \
 
 ### Option C : script PowerShell local
 
-Le projet inclut maintenant [scripts/deploy-cloudrun.ps1](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/scripts/deploy-cloudrun.ps1).
+Le projet inclut maintenant [scripts/deploy-cloudrun.ps1](scripts/deploy-cloudrun.ps1).
 
-1. Completer [backend/cloudrun.env](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/backend/cloudrun.env).
+1. Completer [backend/cloudrun.env.example](backend/cloudrun.env.example) puis le copier en `backend/cloudrun.env`.
 2. Installer le `Google Cloud SDK`.
 3. Lancer :
 
@@ -116,6 +116,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\deploy-cloudrun.ps1 -ProjectI
 - `STRIPE_API_KEY` si Stripe est active
 - `RESEND_API_KEY` et `SENDER_EMAIL` si reset password par email
 - `TWITCH_CHANNEL`
+- `TWITCH_CLIENT_ID` et `TWITCH_CLIENT_SECRET` pour l'etat live reel
 
 Health checks disponibles :
 
@@ -188,7 +189,7 @@ Etat constate :
 
 ## 3. Vercel
 
-Le frontend utilise [frontend/vercel.json](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/frontend/vercel.json).
+Le frontend utilise [frontend/vercel.json](frontend/vercel.json).
 
 ### Configuration Vercel
 
@@ -232,6 +233,6 @@ Donc je ne peux pas poser les variables, creer les DNS ni lancer le deploiement 
 ## 6. Risques a traiter avant prod
 
 - `backend/server.py` reste trop gros et devrait etre decoupe.
-- Une partie de la logique produit reste partiellement mockee.
+- Le flux CS2 reel depend d'un `BACKEND_PUBLIC_URL`, d'un `MATCHZY_WEBHOOK_SECRET`, d'un `MATCHZY_CONFIG_TOKEN` et d'un `RCON_ENC_KEY` correctement poses.
 - Les webhooks, Steam, Twitch et Stripe doivent etre valides avec les vraies cles.
 - Il faut une vraie offre Redis managée pour la resilience du temps reel et des jobs.

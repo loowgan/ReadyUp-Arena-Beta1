@@ -20,7 +20,7 @@ Si tu veux eviter toute facturation Google Cloud :
 - base sur `MongoDB Atlas Free` ;
 - Redis sur `Upstash Free`.
 
-Le backend Render est preconfigure dans [render.yaml](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/render.yaml).
+Le backend Render est preconfigure dans [render.yaml](render.yaml).
 
 Compromis principaux :
 
@@ -50,15 +50,15 @@ Compromis principaux :
 
 ## Documentation
 
-- Procedure complete : [DEPLOYMENT.md](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/DEPLOYMENT.md)
-- Variables backend : [backend/.env.example](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/backend/.env.example)
-- Variables frontend : [frontend/.env.example](C:/Users/logan/Desktop/READYUPARENA/ReadyUp-Arena-main-corrige/ReadyUp-Arena-main/frontend/.env.example)
+- Procedure complete : [DEPLOYMENT.md](DEPLOYMENT.md)
+- Variables backend : [backend/.env.example](backend/.env.example)
+- Variables frontend : [frontend/.env.example](frontend/.env.example)
 
 ## Limites fonctionnelles restantes
 
-Le projet n'est pas encore une implementation complete du cahier des charges long fourni dans les `.md`. Plusieurs blocs restent partiels ou mocketes, notamment :
+Le socle beta est exploitable, mais quelques dependances de production restent externes au repo :
 
-- statut Twitch encore simule ;
-- une partie du produit reste monolithique dans `backend/server.py` ;
-- le parcours MatchZy / CS2 / arbitrage n'est pas encore complet bout en bout ;
-- la mise en ligne necessite toujours les vraies valeurs d'acces Cloud / Mongo / DNS.
+- le statut Twitch live reel depend toujours des credentials `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` ;
+- `backend/server.py` reste trop monolithique et merite encore un decoupage par domaines ;
+- le flux CS2 reel est maintenant cable cote backend, mais il depend toujours des vraies variables MatchZy / bridge / Mongo / Redis au deploiement ;
+- la mise en ligne finale necessite encore les vraies valeurs d'acces Cloud / Mongo / DNS.

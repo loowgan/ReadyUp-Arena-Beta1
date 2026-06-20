@@ -420,27 +420,56 @@ const Home = () => {
   const [teams, setTeams] = useState([]);
   const [players, setPlayers] = useState([]);
   useEffect(() => {
-    Promise.all([
-      axios.get(`${API}/tournaments`),
-      axios.get(`${API}/news`),
-      axios.get(`${API}/announcements`),
-      axios.get(`${API}/contests`),
-      axios.get(`${API}/rewards`),
-      axios.get(`${API}/stats/global`),
-      axios.get(`${API}/twitch/live`),
-      axios.get(`${API}/teams`),
-      axios.get(`${API}/players`),
-    ]).then(([t, n, a, c, r, s, l, te, p]) => {
-      setTournaments(t.data);
-      setNews(n.data);
-      setAnnouncements(a.data);
-      setContests(c.data);
-      setRewards(r.data);
-      setStats(s.data);
-      setLive(l.data);
-      setTeams(te.data);
-      setPlayers(p.data);
-    });
+    const load = async () => {
+      const [
+        tournamentsResult,
+        newsResult,
+        announcementsResult,
+        contestsResult,
+        rewardsResult,
+        statsResult,
+        liveResult,
+        teamsResult,
+        playersResult,
+      ] = await Promise.allSettled([
+        axios.get(`${API}/tournaments`),
+        axios.get(`${API}/news`),
+        axios.get(`${API}/announcements`),
+        axios.get(`${API}/contests`),
+        axios.get(`${API}/rewards`),
+        axios.get(`${API}/stats/global`),
+        axios.get(`${API}/twitch/live`),
+        axios.get(`${API}/teams`),
+        axios.get(`${API}/players`),
+      ]);
+
+      setTournaments(tournamentsResult.status === "fulfilled" ? tournamentsResult.value.data : []);
+      setNews(newsResult.status === "fulfilled" ? newsResult.value.data : []);
+      setAnnouncements(announcementsResult.status === "fulfilled" ? announcementsResult.value.data : []);
+      setContests(contestsResult.status === "fulfilled" ? contestsResult.value.data : []);
+      setRewards(rewardsResult.status === "fulfilled" ? rewardsResult.value.data : []);
+      setStats(statsResult.status === "fulfilled" ? statsResult.value.data : {});
+      setLive(
+        liveResult.status === "fulfilled"
+          ? liveResult.value.data
+          : {
+              channel: "esl_csgo",
+              display_name: "esl_csgo",
+              live: false,
+              configured: false,
+              source: "frontend_fallback",
+              title: null,
+              viewers: null,
+              game: "Counter-Strike 2",
+              status_message: "Flux Twitch indisponible pour le moment.",
+              url: "https://twitch.tv/esl_csgo",
+            }
+      );
+      setTeams(teamsResult.status === "fulfilled" ? teamsResult.value.data : []);
+      setPlayers(playersResult.status === "fulfilled" ? playersResult.value.data : []);
+    };
+
+    load();
   }, []);
 
   const availablePlayers = players.filter((player) => player.available).slice(0, 4);
@@ -448,6 +477,11 @@ const Home = () => {
   const openTournaments = tournaments.filter((t) => ["open", "registering"].includes(t.status)).slice(0, 3);
   const topContests = contests.slice(0, 2);
   const featuredRewards = rewards.slice(0, 3);
+  const liveBadgeVariant = live?.live ? "live" : live?.configured ? "soon" : "offline";
+  const liveBadgeLabel = live?.live ? "LIVE" : live?.configured ? "HORS LIGNE" : "FLUX EMBARQUE";
+  const livePanelLabel = live?.live ? "EN DIRECT" : live?.configured ? "CHAINE OFFLINE" : "STATUT NON CONFIGURE";
+  const liveTitle = live?.title || (live?.configured ? `${live?.display_name || live?.channel} est hors ligne` : "Flux Twitch embarque");
+  const liveUrl = live?.url || `https://twitch.tv/${live?.channel || "esl_csgo"}`;
 
   return (
     <div data-testid="home-page">
@@ -490,20 +524,21 @@ const Home = () => {
 
       <div className="max-w-7xl mx-auto px-6">
         {/* TWITCH MAJOR */}
-        <SectionTitle sub="Live officiel" title="Major CS2 en direct" cta={live?.live && <Badge variant="live" testid="twitch-live-badge">LIVE</Badge>}/>
+        <SectionTitle sub="Live officiel" title="Major CS2 en direct" cta={<Badge variant={liveBadgeVariant} testid="twitch-live-badge">{liveBadgeLabel}</Badge>}/>
         <div className="grid lg:grid-cols-3 gap-4" data-testid="twitch-block">
           <div className="lg:col-span-2 aspect-video glass overflow-hidden relative">
             <iframe title="Twitch" src={`https://player.twitch.tv/?channel=${live?.channel || "esl_csgo"}&parent=${window.location.hostname}&muted=true&autoplay=false`}
               allowFullScreen className="w-full h-full" frameBorder="0"/>
           </div>
           <div className="glass p-6 flex flex-col">
-            <Badge variant="live" testid="twitch-status-badge">EN DIRECT</Badge>
-            <h3 className="font-display text-xl mt-3">{live?.title || "BLAST Major CS2"}</h3>
-            <p className="text-sm text-white/50 mt-1">Chaîne <span className="text-cyan-neon">{live?.channel}</span></p>
+            <Badge variant={liveBadgeVariant} testid="twitch-status-badge">{livePanelLabel}</Badge>
+            <h3 className="font-display text-xl mt-3">{liveTitle}</h3>
+            <p className="text-sm text-white/50 mt-1">Chaîne <span className="text-cyan-neon">{live?.display_name || live?.channel || "esl_csgo"}</span></p>
             <div className="mt-auto pt-6 space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-white/50">Spectateurs</span><span className="font-display text-orange-500">{live?.viewers?.toLocaleString()}</span></div>
-              <div className="flex justify-between"><span className="text-white/50">Jeu</span><span>{live?.game}</span></div>
-              <a href={`https://twitch.tv/${live?.channel}`} target="_blank" rel="noreferrer" className="btn-ghost w-full mt-3" data-testid="open-twitch-btn"><ExternalLink size={14}/>Ouvrir sur Twitch</a>
+              <div className="flex justify-between"><span className="text-white/50">Spectateurs</span><span className="font-display text-orange-500">{live?.viewers ? live.viewers.toLocaleString() : "—"}</span></div>
+              <div className="flex justify-between"><span className="text-white/50">Jeu</span><span>{live?.game || "Counter-Strike 2"}</span></div>
+              <p className="text-xs text-white/45">{live?.status_message || "Flux Twitch indisponible."}</p>
+              <a href={liveUrl} target="_blank" rel="noreferrer" className="btn-ghost w-full mt-3" data-testid="open-twitch-btn"><ExternalLink size={14}/>Ouvrir sur Twitch</a>
             </div>
           </div>
         </div>
@@ -1268,6 +1303,8 @@ const MatchRoom = () => {
   const [submitting, setSubmitting] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
   const [reportError, setReportError] = useState("");
+  const [connectBusy, setConnectBusy] = useState("");
+  const [connectError, setConnectError] = useState("");
   const [reportForm, setReportForm] = useState({ kind: "technical", message: "", round_label: "", target_user_id: "", target_steam_id: "" });
 
   useEffect(() => {
@@ -1335,13 +1372,41 @@ const MatchRoom = () => {
     }
   };
 
+  const openMatchConnection = async (mode) => {
+    if (!token) {
+      setConnectError(mode === "spectate" ? "Connectez-vous pour ouvrir le flux HLTV." : "Connectez-vous pour rejoindre ce match.");
+      return;
+    }
+    setConnectBusy(mode);
+    setConnectError("");
+    try {
+      const response = await axios.post(
+        `${API}/matches/${id}/${mode === "spectate" ? "spectate" : "join"}`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const launchUrl = response.data?.join_url || response.data?.spectator_url;
+      if (!launchUrl) {
+        throw new Error("Steam URL unavailable");
+      }
+      window.location.href = launchUrl;
+    } catch (connectionError) {
+      setConnectError(connectionError?.response?.data?.detail || "Connexion indisponible pour le moment.");
+    } finally {
+      setConnectBusy("");
+    }
+  };
+
   const summary = detail?.summary || {};
   const timeline = [...(detail?.timeline || [])].slice(-12).reverse();
   const latestEventAt = detail?.timeline?.length ? detail.timeline[detail.timeline.length - 1]?.received_at : null;
   const openReports = reports.filter((item) => item.status === "open" || item.status === "acknowledged").length;
   const server = detail?.server;
+  const serverStatusVariant = detail?.ended ? "offline" : server?.status === "live" ? "live" : server?.status === "launch_pending" ? "soon" : server?.status === "online" ? "verified" : "default";
   const participants = (detail?.participants || []).filter((item) => item?.steam_id);
   const reportablePlayers = participants.filter((item) => item.user_id !== user?.id && item.steam_id !== user?.steam_id);
+  const joinNeedsAuth = Boolean(server?.join_password_required);
+  const spectatorNeedsAuth = Boolean(server?.spectator_password_required);
 
   if (loading) {
     return (
@@ -1402,7 +1467,7 @@ const MatchRoom = () => {
           <div className="glass p-6">
             <div className="flex items-center justify-between gap-3">
               <h3 className="font-display uppercase">Serveur et orchestration</h3>
-              <Badge variant={server?.status === "live" ? "live" : "default"}>{server?.status || "non assigne"}</Badge>
+              <Badge variant={serverStatusVariant}>{detail?.ended ? "termine" : server?.status || "non assigne"}</Badge>
             </div>
             <div className="grid md:grid-cols-2 gap-4 mt-4 text-sm text-white/70">
               <div>
@@ -1411,10 +1476,42 @@ const MatchRoom = () => {
               </div>
               <div>
                 <div className="text-xs uppercase tracking-widest text-white/40">Connexion</div>
-                <div className="mt-2">{server?.host ? `${server.host}:${server.port}` : "Masquee / non disponible"}</div>
+                <div className="mt-2">
+                  {server?.public_host
+                    ? `${server.public_host}:${server.game_port || server.port}`
+                    : server?.host
+                      ? `${server.host}:${server.game_port || server.port}`
+                      : "Masquee / non disponible"}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/40">Cycle</div>
+                <div className="mt-2">{server?.current_map || summary.map_name || "Map en attente"} • {server?.current_match_id || id}</div>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/40">Disponibilite</div>
+                <div className="mt-2">{detail?.ended ? "Serie cloturee" : server?.status === "launch_pending" ? "Chargement MatchZy / serveur" : server?.status === "live" ? "Pret a rejoindre" : "Orchestration en cours"}</div>
               </div>
             </div>
             <div className="flex flex-wrap gap-2 mt-5">
+              {server?.connect_url && <a href={server.connect_url} className="btn-neon text-xs"><ExternalLink size={12}/>Rejoindre le serveur</a>}
+              {!server?.connect_url && joinNeedsAuth && !detail?.ended && token && (
+                <button onClick={() => openMatchConnection("join")} disabled={connectBusy === "join"} className="btn-neon text-xs">
+                  <ExternalLink size={12}/>{connectBusy === "join" ? "Connexion..." : "Rejoindre le serveur"}
+                </button>
+              )}
+              {!server?.connect_url && joinNeedsAuth && !detail?.ended && !token && (
+                <Link to="/login" className="btn-neon text-xs"><Lock size={12}/>Connexion joueur requise</Link>
+              )}
+              {server?.hltv_url && <a href={server.hltv_url} className="btn-ghost text-xs"><Tv size={12}/>Voir en spectateur</a>}
+              {!server?.hltv_url && spectatorNeedsAuth && !detail?.ended && token && (
+                <button onClick={() => openMatchConnection("spectate")} disabled={connectBusy === "spectate"} className="btn-ghost text-xs">
+                  <Tv size={12}/>{connectBusy === "spectate" ? "Ouverture..." : "Ouvrir HLTV"}
+                </button>
+              )}
+              {!server?.hltv_url && spectatorNeedsAuth && !detail?.ended && !token && (
+                <Link to="/login" className="btn-ghost text-xs"><Lock size={12}/>Connexion spectateur</Link>
+              )}
               <button onClick={() => setReportForm((prev) => ({ ...prev, kind: "technical" }))} className="btn-ghost text-xs" data-testid="report-btn">
                 <AlertTriangle size={12}/>Signaler
               </button>
@@ -1425,6 +1522,12 @@ const MatchRoom = () => {
                 <Radio size={12}/>Retour aux matchs live
               </Link>
             </div>
+            {(joinNeedsAuth || spectatorNeedsAuth) && !detail?.ended && (
+              <div className="text-xs text-white/45 mt-4">
+                Les liens publics restent masques quand un mot de passe serveur ou HLTV est necessaire.
+              </div>
+            )}
+            {connectError && <div className="text-xs text-red-300 mt-3">{connectError}</div>}
           </div>
 
           <div className="glass p-6">
@@ -2696,15 +2799,24 @@ const StatusPage = () => {
   const [stats, setStats] = useState(null);
 
   useEffect(() => {
-    Promise.all([
-      axios.get(`${BACKEND_BASE_URL}/health/ready`),
-      axios.get(`${API}/stats/global`),
-    ]).then(([h, s]) => {
-      setHealth(h.data);
-      setStats(s.data);
-    }).catch(() => {
-      setHealth({ status: "degraded", services: { mongo: "unknown", redis: "unknown" } });
-    });
+    const load = async () => {
+      const [healthResult, statsResult] = await Promise.allSettled([
+        axios.get(`${BACKEND_BASE_URL}/health/ready`),
+        axios.get(`${API}/stats/global`),
+      ]);
+
+      if (healthResult.status === "fulfilled") {
+        setHealth(healthResult.value.data);
+      } else {
+        setHealth({ status: "degraded", services: { mongo: "unknown", redis: "unknown" } });
+      }
+
+      if (statsResult.status === "fulfilled") {
+        setStats(statsResult.value.data);
+      }
+    };
+
+    load();
   }, []);
 
   return (
@@ -2754,22 +2866,23 @@ const Cs2Hub = () => {
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      try {
-        const [healthResponse, serversResponse, matchesResponse, eventsResponse] = await Promise.all([
+      const [healthResult, serversResult, matchesResult, eventsResult] = await Promise.allSettled([
           axios.get(`${BACKEND_BASE_URL}/health/ready`),
           axios.get(`${API}/cs2/servers`),
           axios.get(`${API}/matches/live`),
           axios.get(`${API}/cs2/events?limit=6`),
         ]);
-        setHealth(healthResponse.data);
-        setServers(serversResponse.data);
-        setMatches(matchesResponse.data);
-        setEvents(eventsResponse.data);
-      } catch {
+
+      if (healthResult.status === "fulfilled") {
+        setHealth(healthResult.value.data);
+      } else {
         setHealth({ status: "degraded", services: { mongo: "unknown", redis: "unknown" } });
-      } finally {
-        setLoading(false);
       }
+
+      setServers(serversResult.status === "fulfilled" ? serversResult.value.data : []);
+      setMatches(matchesResult.status === "fulfilled" ? matchesResult.value.data : []);
+      setEvents(eventsResult.status === "fulfilled" ? eventsResult.value.data : []);
+      setLoading(false);
     };
 
     load();
@@ -2880,6 +2993,9 @@ const Cs2Hub = () => {
               {server.connect_url && <a href={server.connect_url} className="btn-ghost text-xs"><ExternalLink size={12}/>Connexion</a>}
               {server.hltv_url && <a href={server.hltv_url} className="btn-ghost text-xs"><Tv size={12}/>Spectateur</a>}
             </div>
+            {(server.join_password_required || server.spectator_password_required) && (
+              <div className="text-xs text-white/40 mt-3">Connexion privee: passez par la room du match ou une session authentifiee.</div>
+            )}
           </div>
         ))}
       </div>
@@ -2898,6 +3014,14 @@ const Cs2Hub = () => {
                 </div>
                 <div className="font-display text-3xl text-cyan-neon mt-3">{match.team1_score} : {match.team2_score}</div>
                 <div className="text-sm text-white/50 mt-2">{match.map_name || "Map en cours"} • {match.server || "Serveur non lié publiquement"}</div>
+                <div className="flex flex-wrap gap-2 mt-4">
+                  <Link to={`/match/${match.matchid}`} className="btn-ghost text-xs"><Radio size={12}/>Suivi match</Link>
+                  {match.connect_url && <a href={match.connect_url} className="btn-neon text-xs"><ExternalLink size={12}/>Rejoindre</a>}
+                  {match.spectator_url && <a href={match.spectator_url} className="btn-ghost text-xs"><Tv size={12}/>Spectateur</a>}
+                </div>
+                {(match.join_password_required || match.spectator_password_required) && (
+                  <div className="text-xs text-white/40 mt-3">Connexion privee: ouvrez la room du match pour acceder aux boutons authentifies.</div>
+                )}
               </div>
             ))}
           </div>
@@ -3483,6 +3607,7 @@ const Cs2Panel = () => {
   };
   const [servers, setServers] = useState([]);
   const [events, setEvents] = useState([]);
+  const [platformConfig, setPlatformConfig] = useState(null);
   const [form, setForm] = useState(emptyServerForm);
   const [selected, setSelected] = useState(null);
   const [cmd, setCmd] = useState("status");
@@ -3490,8 +3615,14 @@ const Cs2Panel = () => {
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
-    const r = await axios.get(`${API}/cs2/servers`); setServers(r.data);
-    const e = await axios.get(`${API}/cs2/events?limit=10`); setEvents(e.data);
+    const [serversResponse, eventsResponse, configResponse] = await Promise.allSettled([
+      axios.get(`${API}/cs2/servers`),
+      axios.get(`${API}/cs2/events?limit=10`),
+      axios.get(`${API}/config`),
+    ]);
+    setServers(serversResponse.status === "fulfilled" ? serversResponse.value.data : []);
+    setEvents(eventsResponse.status === "fulfilled" ? eventsResponse.value.data : []);
+    setPlatformConfig(configResponse.status === "fulfilled" ? configResponse.value.data : null);
   };
   useEffect(() => { refresh(); }, []);
 
@@ -3546,6 +3677,47 @@ const Cs2Panel = () => {
   return (
     <div data-testid="cs2-panel">
       <SectionTitle sub="Pilotage CS2 (RCON / Bridge)" title="Serveurs de match"/>
+      {platformConfig?.integrations && (
+        <div className="glass p-6 mb-4" data-testid="cs2-platform-readiness">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-xs uppercase tracking-widest text-white/40">Pré requis backend</div>
+              <div className="font-display text-2xl uppercase mt-2">Etat des integrations critiques</div>
+            </div>
+            <button disabled={busy} onClick={refresh} className="btn-ghost text-xs"><RefreshCw size={12}/>Rafraichir</button>
+          </div>
+          <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mt-5">
+            <div className="border border-white/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-white/40">MatchZy public URL</div>
+              <div className={`font-display text-xl mt-2 ${platformConfig.integrations.matchzy?.public_base_configured ? "text-cyan-neon" : "text-yellow-neon"}`}>
+                {platformConfig.integrations.matchzy?.public_base_configured ? "OK" : "MANQUANT"}
+              </div>
+            </div>
+            <div className="border border-white/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-white/40">Webhook secret</div>
+              <div className={`font-display text-xl mt-2 ${platformConfig.integrations.matchzy?.webhook_secret_configured ? "text-cyan-neon" : "text-yellow-neon"}`}>
+                {platformConfig.integrations.matchzy?.webhook_secret_configured ? "OK" : "MANQUANT"}
+              </div>
+            </div>
+            <div className="border border-white/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-white/40">Config token</div>
+              <div className={`font-display text-xl mt-2 ${platformConfig.integrations.matchzy?.config_token_configured ? "text-cyan-neon" : "text-yellow-neon"}`}>
+                {platformConfig.integrations.matchzy?.config_token_configured ? "OK" : "MANQUANT"}
+              </div>
+            </div>
+            <div className="border border-white/10 p-4">
+              <div className="text-xs uppercase tracking-widest text-white/40">Twitch API</div>
+              <div className={`font-display text-xl mt-2 ${platformConfig.integrations.twitch?.configured ? "text-cyan-neon" : "text-yellow-neon"}`}>
+                {platformConfig.integrations.twitch?.configured ? "OK" : "FALLBACK"}
+              </div>
+            </div>
+          </div>
+          <div className="text-xs text-white/45 mt-4">
+            Email reset: {platformConfig.integrations.email?.configured ? "configuré" : "non configuré"} •
+            Twitch channel: {platformConfig.integrations.twitch?.channel || "esl_csgo"}
+          </div>
+        </div>
+      )}
       {isAdmin && (
         <form onSubmit={addServer} className="glass p-6 grid md:grid-cols-2 xl:grid-cols-5 gap-3 items-end mb-4" data-testid="cs2-add-form">
           <div><label className="text-xs uppercase tracking-widest text-white/40">Nom</label>
@@ -3602,6 +3774,8 @@ const Cs2Panel = () => {
             <div className="text-xs text-white/60 mt-1">Statut : {s.status}</div>
             <div className="text-xs text-white/40 mt-1">Mode : {s.control_mode === "bridge" ? "bridge" : "rcon"}</div>
             {s.last_bridge_seen_at && <div className="text-xs text-white/40 mt-1">Bridge vu : {new Date(s.last_bridge_seen_at).toLocaleString("fr-FR")}</div>}
+            {!s.last_bridge_seen_at && s.control_mode === "bridge" && <div className="text-xs text-yellow-neon mt-1">Bridge jamais vu par l'API pour l'instant</div>}
+            {s.current_match_id && <div className="text-xs text-white/40 mt-1">Match courant : {s.current_match_id}</div>}
             <div className="flex flex-wrap gap-2 mt-3 text-[10px] uppercase tracking-widest text-white/50">
               {s.capabilities?.matchzy && <span className="border border-white/10 px-2 py-1">MatchZy</span>}
               {s.capabilities?.cssimpleadmin && <span className="border border-white/10 px-2 py-1">CSsimpleadmin</span>}

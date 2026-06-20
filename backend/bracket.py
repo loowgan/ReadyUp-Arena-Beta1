@@ -259,6 +259,63 @@ def report_match(bracket: dict, match_id: str, winner_id: str) -> dict:
     return bracket
 
 
+async def apply_manual_bracket_result(
+    db,
+    journal,
+    tournament_id: str,
+    match_id: str,
+    winner_id: str,
+    *,
+    expected_version: Optional[int] = None,
+    actor_user_id: Optional[str] = None,
+) -> dict:
+    raw = await db.brackets.find_one({"tournament_id": tournament_id})
+    if not raw:
+        raise HTTPException(404, "Aucun bracket généré")
+
+    has_version = "version" in raw
+    current_version = raw.get("version", 0)
+    if expected_version is not None and expected_version != current_version:
+        raise HTTPException(409, "Le bracket a été modifié par un autre administrateur. Rechargez et réessayez.")
+
+    bracket = {k: v for k, v in raw.items() if k != "_id"}
+    report_match(bracket, match_id, winner_id)
+    resolved = _index(bracket).get(match_id)
+    now_iso = _now_iso()
+    if resolved:
+        resolved["result_source"] = "manual_report"
+        resolved["result_received_at"] = now_iso
+        resolved["launch_status"] = "finished"
+        resolved["last_event"] = "manual_result"
+        resolved["updated_at"] = now_iso
+
+    bracket["version"] = current_version + 1
+    flt = {"tournament_id": tournament_id, "version": current_version} if has_version else {"tournament_id": tournament_id}
+    res = await db.brackets.replace_one(flt, bracket)
+    matched = getattr(res, "matched_count", getattr(res, "modified_count", 0))
+    if matched == 0:
+        raise HTTPException(409, "Le bracket a été modifié par un autre administrateur. Rechargez et réessayez.")
+
+    await db.cs2_servers.update_many(
+        {"$or": [{"current_match_id": str(match_id)}, {"current_bracket_match_id": str(match_id)}]},
+        {"$set": {
+            "status": "online",
+            "last_match_id": str(match_id),
+            "last_checked_at": now_iso,
+            "current_match_id": None,
+            "current_tournament_id": None,
+            "current_bracket_match_id": None,
+            "current_duel_id": None,
+        }},
+    )
+    await journal(
+        "bracket_result",
+        actor_user_id,
+        {"tournament_id": tournament_id, "match": match_id, "winner": winner_id, "version": bracket["version"]},
+    )
+    return bracket
+
+
 def build_bracket_router(db, get_admin_user, journal):
     router = APIRouter(prefix="/api/tournaments")
 
@@ -301,24 +358,14 @@ def build_bracket_router(db, get_admin_user, journal):
 
     @router.post("/{tid}/bracket/match/{match_id}/result")
     async def set_result(tid: str, match_id: str, req: ResultReq, admin=Depends(get_admin_user)):
-        raw = await db.brackets.find_one({"tournament_id": tid})
-        if not raw:
-            raise HTTPException(404, "Aucun bracket généré")
-        has_version = "version" in raw
-        current_version = raw.get("version", 0)
-        # Optimistic concurrency: reject stale client submissions early
-        if req.expected_version is not None and req.expected_version != current_version:
-            raise HTTPException(409, "Le bracket a été modifié par un autre administrateur. Rechargez et réessayez.")
-        b = {k: v for k, v in raw.items() if k != "_id"}
-        report_match(b, match_id, req.winner_id)
-        b["version"] = current_version + 1
-        # Conditional write guarded by the version we read (multi-admin safe)
-        flt = {"tournament_id": tid, "version": current_version} if has_version \
-            else {"tournament_id": tid, "version": {"$exists": False}}
-        res = await db.brackets.replace_one(flt, b)
-        if res.matched_count == 0:
-            raise HTTPException(409, "Le bracket a été modifié par un autre administrateur. Rechargez et réessayez.")
-        await journal("bracket_result", admin["id"], {"tournament_id": tid, "match": match_id, "winner": req.winner_id, "version": b["version"]})
-        return b
+        return await apply_manual_bracket_result(
+            db,
+            journal,
+            tid,
+            match_id,
+            req.winner_id,
+            expected_version=req.expected_version,
+            actor_user_id=admin["id"],
+        )
 
     return router
