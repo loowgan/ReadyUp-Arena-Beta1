@@ -28,11 +28,11 @@ services:
       - key: SEED_ADMIN_TOKENS
         value: "1000"
       - key: FRONTEND_URL
-        value: http://localhost:3000
+        value: https://ready-up-arena-beta1.vercel.app
       - key: BACKEND_PUBLIC_URL
-        value: ""
+        value: https://readyup-arena-api.onrender.com
       - key: CORS_ORIGINS
-        value: http://localhost:3000,http://127.0.0.1:3000
+        value: https://ready-up-arena-beta1.vercel.app,http://localhost:3000,http://127.0.0.1:3000
       - key: CORS_ALLOW_CREDENTIALS
         value: "false"
       - key: FEATURE_STEAM_AUTH

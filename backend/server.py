@@ -71,7 +71,7 @@ api_router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
 
 DEFAULT_FRONTEND_URL = "http://localhost:3000"
-DEFAULT_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+DEFAULT_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000,https://ready-up-arena-beta1.vercel.app"
 DEV_JWT_SECRET = "readyup-arena-dev-secret-change-in-prod"
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_HELIX_BASE_URL = "https://api.twitch.tv/helix"
@@ -3044,6 +3044,20 @@ def _frontend_base(request: Optional[Request] = None) -> str:
         return inferred
     return DEFAULT_FRONTEND_URL.rstrip("/")
 
+
+def _cors_origins() -> list[str]:
+    origins: list[str] = []
+    for origin in parse_csv_env("CORS_ORIGINS", DEFAULT_CORS_ORIGINS):
+        public_origin = _public_origin(origin) or origin.strip()
+        if public_origin and public_origin not in origins:
+            origins.append(public_origin)
+
+    frontend_origin = _public_origin(env_text("FRONTEND_URL"))
+    if frontend_origin and frontend_origin not in origins:
+        origins.append(frontend_origin)
+
+    return origins
+
 def _steam_openid_redirect_url(backend: str, link_token: Optional[str] = None, frontend_origin: Optional[str] = None) -> str:
     callback_url = f"{backend}/api/auth/steam/callback"
     callback_query = {}
@@ -4470,7 +4484,7 @@ app.include_router(build_bracket_router(db, get_admin_user, journal))
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=env_flag("CORS_ALLOW_CREDENTIALS", False),
-    allow_origins=parse_csv_env("CORS_ORIGINS", DEFAULT_CORS_ORIGINS),
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

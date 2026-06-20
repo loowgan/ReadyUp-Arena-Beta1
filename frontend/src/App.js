@@ -4,7 +4,7 @@ import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertTriangle, Coins, Heart, ChevronRight, Play, Lock, CheckCircle2, Circle, Clock, Tv, ExternalLink, Star, TrendingUp, Award, Gamepad2, LogOut, User, Server, Terminal, Plus, Trash2, RefreshCw, Gift, ShoppingBag, Ticket, Package } from "lucide-react";
 import { AuthProvider, useAuth } from "./AuthContext";
-import { API, BACKEND_BASE_URL, WS_BASE_URL } from "./lib/api";
+import { API, HEALTH_API, WS_BASE_URL } from "./lib/api";
 
 const DISCORD_URL = process.env.REACT_APP_DISCORD_URL || "https://discord.gg/F6RxTWeSmE";
 const STEAM_GROUP_URL = process.env.REACT_APP_STEAM_GROUP_URL || "https://steamcommunity.com/groups/readyuparena";
@@ -179,29 +179,6 @@ const SectionTitle = ({ title, sub, cta }) => (
   </div>
 );
 
-const HOW_READYUP_WORKS = [
-  {
-    title: "Steam verifie",
-    text: "Le compte joueur reste local, avec liaison Steam OpenID, badge public et controle des doublons pour les tournois qui l'exigent.",
-    icon: Shield,
-  },
-  {
-    title: "Salle d'attente",
-    text: "Presence, appels 5 min / 2 min, remplacement par solos compatibles et verrouillage de roster avant lancement.",
-    icon: Users,
-  },
-  {
-    title: "Orchestration CS2",
-    text: "Le backend pilote les serveurs, prepare le match, suit les evenements MatchZy et remonte les scores sans dependre du navigateur admin.",
-    icon: Server,
-  },
-  {
-    title: "Cloture automatique",
-    text: "Le resultat, le bracket, les matchs live, l'XP et l'audit suivent le cycle du tournoi avec reprise serveur apres redemarrage.",
-    icon: Zap,
-  },
-];
-
 const FAQ_ITEMS = [
   {
     q: "Les tournois sont-ils payants ?",
@@ -220,6 +197,25 @@ const FAQ_ITEMS = [
     a: "Oui pour la beta: inventaire des serveurs, console RCON admin, suivi MatchZy, scores live et supervision. Le hub public CS2 expose maintenant cet etat.",
   },
 ];
+
+const RecentDonors = () => {
+  const [donors, setDonors] = useState([]);
+  useEffect(() => { axios.get(`${API}/donations/recent?limit=5`).then(r => setDonors(r.data)).catch(()=>{}); }, []);
+  if (donors.length === 0) return (
+    <div className="glass p-6 text-center text-white/40" data-testid="no-donors">
+      Soyez le premier à soutenir la plateforme ❤️ — <Link to="/donate" className="text-orange-500">Faire un don</Link>
+    </div>);
+  return (
+    <div className="grid md:grid-cols-5 gap-3" data-testid="recent-donors">
+      {donors.map((d,i) => (
+        <div key={i} className="glass p-4 text-center">
+          <Heart className="text-red-500 mx-auto" size={24}/>
+          <div className="font-display text-2xl text-yellow-neon mt-2">{d.amount_eur}€</div>
+          <div className="text-xs text-white/40 uppercase tracking-widest">{d.kind === "monthly" ? "Mensuel" : "Ponctuel"}</div>
+          <div className="text-[10px] text-white/30 mt-1">{new Date(d.at).toLocaleDateString("fr-FR")}</div>
+        </div>))}
+    </div>);
+};
 
 const PARTNER_BLOCKS = [
   {
@@ -521,11 +517,9 @@ const Home = () => {
   const [news, setNews] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
   const [contests, setContests] = useState([]);
-  const [rewards, setRewards] = useState([]);
   const [stats, setStats] = useState({});
   const [live, setLive] = useState(null);
   const [teams, setTeams] = useState([]);
-  const [players, setPlayers] = useState([]);
   useEffect(() => {
     const load = async () => {
       const [
@@ -533,28 +527,23 @@ const Home = () => {
         newsResult,
         announcementsResult,
         contestsResult,
-        rewardsResult,
         statsResult,
         liveResult,
         teamsResult,
-        playersResult,
       ] = await Promise.allSettled([
         axios.get(`${API}/tournaments`),
         axios.get(`${API}/news`),
         axios.get(`${API}/announcements`),
         axios.get(`${API}/contests`),
-        axios.get(`${API}/rewards`),
         axios.get(`${API}/stats/global`),
         axios.get(`${API}/twitch/live`),
         axios.get(`${API}/teams`),
-        axios.get(`${API}/players`),
       ]);
 
       setTournaments(tournamentsResult.status === "fulfilled" ? tournamentsResult.value.data : []);
       setNews(newsResult.status === "fulfilled" ? newsResult.value.data : []);
       setAnnouncements(announcementsResult.status === "fulfilled" ? announcementsResult.value.data : []);
       setContests(contestsResult.status === "fulfilled" ? contestsResult.value.data : []);
-      setRewards(rewardsResult.status === "fulfilled" ? rewardsResult.value.data : []);
       setStats(statsResult.status === "fulfilled" ? statsResult.value.data : {});
       setLive(
         liveResult.status === "fulfilled"
@@ -573,19 +562,19 @@ const Home = () => {
             }
       );
       setTeams(teamsResult.status === "fulfilled" ? teamsResult.value.data : []);
-      setPlayers(playersResult.status === "fulfilled" ? playersResult.value.data : []);
     };
 
     load();
   }, []);
 
-  const availablePlayers = players.filter((player) => player.available).slice(0, 4);
-  const liveTournaments = tournaments.filter((t) => ["starting", "live", "in_progress"].includes(t.status)).slice(0, 3);
-  const openTournaments = tournaments.filter((t) => ["open", "registering"].includes(t.status)).slice(0, 3);
-  const topContests = contests.slice(0, 2);
-  const featuredRewards = rewards.slice(0, 3);
   const featuredNews = news[0] || null;
   const supportingNews = news.slice(1, 5);
+  const topContests = contests.slice(0, 2);
+  const showLiveBlock = Boolean(live?.configured || live?.live);
+  const showTopTeams = teams.length > 0;
+  const showAnnouncements = announcements.length > 0;
+  const showNews = Boolean(featuredNews || supportingNews.length);
+  const showContests = topContests.length > 0;
   const liveBadgeVariant = live?.live ? "live" : live?.configured ? "soon" : "offline";
   const liveBadgeLabel = live?.live ? "LIVE" : live?.configured ? "HORS LIGNE" : "FLUX EMBARQUE";
   const livePanelLabel = live?.live ? "EN DIRECT" : live?.configured ? "CHAINE OFFLINE" : "STATUT NON CONFIGURE";
@@ -633,63 +622,28 @@ const Home = () => {
       </section>
 
       <div className="max-w-7xl mx-auto px-6">
-        {/* TWITCH MAJOR */}
-        <SectionTitle sub="Live officiel" title="Major CS2 en direct" cta={<Badge variant={liveBadgeVariant} testid="twitch-live-badge">{liveBadgeLabel}</Badge>}/>
-        <div className="grid lg:grid-cols-3 gap-4" data-testid="twitch-block">
-          <div className="lg:col-span-2 aspect-video glass overflow-hidden relative">
-            <iframe title="Twitch" src={`https://player.twitch.tv/?channel=${live?.channel || "esl_csgo"}&parent=${window.location.hostname}&muted=true&autoplay=false`}
-              allowFullScreen className="w-full h-full" frameBorder="0"/>
-          </div>
-          <div className="glass p-6 flex flex-col">
-            <Badge variant={liveBadgeVariant} testid="twitch-status-badge">{livePanelLabel}</Badge>
-            <h3 className="font-display text-xl mt-3">{liveTitle}</h3>
-            <p className="text-sm text-white/50 mt-1">Chaîne <span className="text-cyan-neon">{live?.display_name || live?.channel || "esl_csgo"}</span></p>
-            <div className="mt-auto pt-6 space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-white/50">Spectateurs</span><span className="font-display text-orange-500">{live?.viewers ? live.viewers.toLocaleString() : "—"}</span></div>
-              <div className="flex justify-between"><span className="text-white/50">Jeu</span><span>{live?.game || "Counter-Strike 2"}</span></div>
-              <p className="text-xs text-white/45">{live?.status_message || "Flux Twitch indisponible."}</p>
-              <a href={liveUrl} target="_blank" rel="noreferrer" className="btn-ghost w-full mt-3" data-testid="open-twitch-btn"><ExternalLink size={14}/>Ouvrir sur Twitch</a>
-            </div>
-          </div>
-        </div>
-
-        <SectionTitle sub="Hub public" title="État CS2 & orchestration" cta={<Link to="/cs2" className="btn-ghost" data-testid="go-cs2-page">Voir le hub CS2 <ChevronRight size={14}/></Link>}/>
-        <div className="grid lg:grid-cols-[1.5fr_1fr] gap-4">
-          <div className="glass p-6">
-            <div className="flex items-center gap-3 flex-wrap">
-              <Badge variant={live?.live ? "live" : "soon"}>{live?.live ? "MATCH OPS LIVE" : "MODE VEILLE"}</Badge>
-              <span className="text-xs uppercase tracking-[0.3em] text-white/40">Beta publique</span>
-            </div>
-            <h3 className="font-display text-2xl mt-4 uppercase">La partie CS2 ne reste plus cachée en admin</h3>
-            <p className="text-white/60 mt-3">
-              Le hub public expose l'orchestration serveurs, le cycle de match, les événements MatchZy et l'état global de la stack
-              pour montrer que le site ne se limite pas à des cartes de tournois.
-            </p>
-            <div className="grid md:grid-cols-3 gap-3 mt-6">
-              <div className="border border-white/10 p-4">
-                <div className="text-xs uppercase tracking-widest text-white/40">Tournois live</div>
-                <div className="font-display text-3xl text-orange-500 mt-2">{liveTournaments.length}</div>
+        {showLiveBlock && (
+          <>
+            <SectionTitle sub="Live officiel" title="Major CS2 en direct" cta={<Badge variant={liveBadgeVariant} testid="twitch-live-badge">{liveBadgeLabel}</Badge>}/>
+            <div className="grid lg:grid-cols-3 gap-4" data-testid="twitch-block">
+              <div className="lg:col-span-2 aspect-video glass overflow-hidden relative">
+                <iframe title="Twitch" src={`https://player.twitch.tv/?channel=${live?.channel || "esl_csgo"}&parent=${window.location.hostname}&muted=true&autoplay=false`}
+                  allowFullScreen className="w-full h-full" frameBorder="0"/>
               </div>
-              <div className="border border-white/10 p-4">
-                <div className="text-xs uppercase tracking-widest text-white/40">Ouverts / inscriptions</div>
-                <div className="font-display text-3xl text-cyan-neon mt-2">{openTournaments.length}</div>
-              </div>
-              <div className="border border-white/10 p-4">
-                <div className="text-xs uppercase tracking-widest text-white/40">Renforts disponibles</div>
-                <div className="font-display text-3xl text-yellow-neon mt-2">{availablePlayers.length}</div>
+              <div className="glass p-6 flex flex-col">
+                <Badge variant={liveBadgeVariant} testid="twitch-status-badge">{livePanelLabel}</Badge>
+                <h3 className="font-display text-xl mt-3">{liveTitle}</h3>
+                <p className="text-sm text-white/50 mt-1">Chaîne <span className="text-cyan-neon">{live?.display_name || live?.channel || "esl_csgo"}</span></p>
+                <div className="mt-auto pt-6 space-y-2 text-sm">
+                  <div className="flex justify-between"><span className="text-white/50">Spectateurs</span><span className="font-display text-orange-500">{live?.viewers ? live.viewers.toLocaleString() : "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-white/50">Jeu</span><span>{live?.game || "Counter-Strike 2"}</span></div>
+                  <p className="text-xs text-white/45">{live?.status_message || "Flux Twitch indisponible."}</p>
+                  <a href={liveUrl} target="_blank" rel="noreferrer" className="btn-ghost w-full mt-3" data-testid="open-twitch-btn"><ExternalLink size={14}/>Ouvrir sur Twitch</a>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="glass p-6">
-            <h3 className="font-display text-lg uppercase">Livré dans la beta</h3>
-            <div className="space-y-3 mt-4 text-sm text-white/70">
-              <div className="flex gap-3"><CheckCircle2 size={16} className="text-cyan-neon mt-0.5 shrink-0"/><span>Serveurs CS2 inventoriés et supervisés via l'API.</span></div>
-              <div className="flex gap-3"><CheckCircle2 size={16} className="text-cyan-neon mt-0.5 shrink-0"/><span>Console RCON admin et ping serveur pour la partie exploitation.</span></div>
-              <div className="flex gap-3"><CheckCircle2 size={16} className="text-cyan-neon mt-0.5 shrink-0"/><span>Remontée MatchZy et scores temps réel dans le site.</span></div>
-              <div className="flex gap-3"><CheckCircle2 size={16} className="text-cyan-neon mt-0.5 shrink-0"/><span>Décompte, draw et bracket déjà reliés au cycle tournoi.</span></div>
-            </div>
-          </div>
-        </div>
+          </>
+        )}
 
         {/* TOURNAMENTS */}
         <SectionTitle sub="Action immédiate" title="Tournois à venir" cta={<Link to="/tournaments" className="btn-ghost" data-testid="all-tournaments-btn">Tout voir <ChevronRight size={14}/></Link>}/>
@@ -698,192 +652,111 @@ const Home = () => {
         </div>
 
         {/* TOP TEAMS */}
-        <SectionTitle sub="Élite" title="Meilleures équipes"/>
-        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {teams.slice(0,4).map((te, i) => (
-            <Link to="/teams" key={te.id} className="glass glass-hover p-5 transition-all" data-testid={`top-team-${te.id}`}>
-              <div className="flex items-center gap-3"><TeamLogo team={te}/>
-                <div><div className="font-display text-lg">{te.name}</div><div className="text-xs text-white/40">#{i+1} • {te.country}</div></div></div>
-              <div className="grid grid-cols-3 gap-2 mt-4 text-center">
-                <div><div className="font-display text-orange-500 text-lg">{te.elo}</div><div className="text-[10px] uppercase tracking-widest text-white/40">ELO</div></div>
-                <div><div className="font-display text-white text-lg">{te.wins}</div><div className="text-[10px] uppercase tracking-widest text-white/40">WIN</div></div>
-                <div><div className="font-display text-yellow-neon text-lg">{te.trophies}</div><div className="text-[10px] uppercase tracking-widest text-white/40">🏆</div></div>
-              </div>
-            </Link>))}
-        </div>
-
-        <SectionTitle sub="Renforts" title="Joueurs solos disponibles"/>
-        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {availablePlayers.map((player) => (
-            <div key={player.id} className="glass p-5" data-testid={`available-player-${player.id}`}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="font-display text-xl">{player.pseudo}</div>
-                  <div className="text-xs uppercase tracking-widest text-white/40 mt-1">{player.country} • {player.role}</div>
-                </div>
-                {player.steam_verified && <Badge variant="verified">Steam vérifié</Badge>}
-              </div>
-              <div className="grid grid-cols-3 gap-2 mt-5 text-center">
-                <div><div className="font-display text-cyan-neon text-xl">{formatMetric(player.platform_elo ?? player.elo)}</div><div className="text-[10px] uppercase tracking-widest text-white/40">ELO</div></div>
-                <div><div className="font-display text-white text-xl">{formatMetric(player.kdr, 2)}</div><div className="text-[10px] uppercase tracking-widest text-white/40">KDR</div></div>
-                <div><div className="font-display text-yellow-neon text-xl">{player.reliability}</div><div className="text-[10px] uppercase tracking-widest text-white/40">Fiabilité</div></div>
-              </div>
+        {showTopTeams && (
+          <>
+            <SectionTitle sub="Élite" title="Meilleures équipes"/>
+            <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {teams.slice(0,4).map((te, i) => (
+                <Link to="/teams" key={te.id} className="glass glass-hover p-5 transition-all" data-testid={`top-team-${te.id}`}>
+                  <div className="flex items-center gap-3"><TeamLogo team={te}/>
+                    <div><div className="font-display text-lg">{te.name}</div><div className="text-xs text-white/40">#{i+1} • {te.country}</div></div></div>
+                  <div className="grid grid-cols-3 gap-2 mt-4 text-center">
+                    <div><div className="font-display text-orange-500 text-lg">{te.elo}</div><div className="text-[10px] uppercase tracking-widest text-white/40">ELO</div></div>
+                    <div><div className="font-display text-white text-lg">{te.wins}</div><div className="text-[10px] uppercase tracking-widest text-white/40">WIN</div></div>
+                    <div><div className="font-display text-yellow-neon text-lg">{te.trophies}</div><div className="text-[10px] uppercase tracking-widest text-white/40">🏆</div></div>
+                  </div>
+                </Link>))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
 
-        <SectionTitle sub="Plateforme" title="Annonces importantes"/>
-        <div className="grid md:grid-cols-2 gap-4">
-          {announcements.length === 0 && <div className="glass p-6 text-white/40">Aucune annonce active pour le moment.</div>}
-          {announcements.map((announcement) => (
-            <div key={announcement.id} className="glass p-6">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <Badge variant={announcement.kind === "maintenance" ? "soon" : "verified"}>{announcement.kind}</Badge>
-                <span className="text-xs uppercase tracking-widest text-white/40">Priorité {announcement.priority}</span>
-              </div>
-              <h3 className="font-display text-2xl uppercase mt-4">{announcement.title}</h3>
-              <p className="text-white/60 mt-3">{announcement.body}</p>
-              {announcement.cta_url && (
-                announcement.cta_url.startsWith("http") ? (
-                  <a href={announcement.cta_url} target="_blank" rel="noreferrer" className="btn-ghost mt-5">
-                    {announcement.cta_label || "Ouvrir"} <ExternalLink size={14}/>
-                  </a>
-                ) : (
-                  <Link to={announcement.cta_url} className="btn-ghost mt-5">
-                    {announcement.cta_label || "Ouvrir"} <ChevronRight size={14}/>
-                  </Link>
-                )
+        {showAnnouncements && (
+          <>
+            <SectionTitle sub="Plateforme" title="Annonces importantes"/>
+            <div className="grid md:grid-cols-2 gap-4">
+              {announcements.map((announcement) => (
+                <div key={announcement.id} className="glass p-6">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <Badge variant={announcement.kind === "maintenance" ? "soon" : "verified"}>{announcement.kind}</Badge>
+                    <span className="text-xs uppercase tracking-widest text-white/40">Priorité {announcement.priority}</span>
+                  </div>
+                  <h3 className="font-display text-2xl uppercase mt-4">{announcement.title}</h3>
+                  <p className="text-white/60 mt-3">{announcement.body}</p>
+                  {announcement.cta_url && (
+                    announcement.cta_url.startsWith("http") ? (
+                      <a href={announcement.cta_url} target="_blank" rel="noreferrer" className="btn-ghost mt-5">
+                        {announcement.cta_label || "Ouvrir"} <ExternalLink size={14}/>
+                      </a>
+                    ) : (
+                      <Link to={announcement.cta_url} className="btn-ghost mt-5">
+                        {announcement.cta_label || "Ouvrir"} <ChevronRight size={14}/>
+                      </Link>
+                    )
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {showNews && (
+          <>
+            <SectionTitle sub="Actualité" title="Dernières news"/>
+            <div className="grid xl:grid-cols-[1.15fr_0.85fr] gap-4">
+              {featuredNews && (
+                <article className="glass p-8 border border-orange-500/20" data-testid={`news-${featuredNews.id}`}>
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <Badge variant="soon">A la une</Badge>
+                    <div className="text-xs text-orange-400 uppercase tracking-widest">{new Date(featuredNews.date).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" })}</div>
+                  </div>
+                  <h3 className="font-display text-3xl sm:text-4xl uppercase mt-5">{featuredNews.title}</h3>
+                  <p className="text-white/70 mt-4 text-lg">{featuredNews.excerpt}</p>
+                  <div className="mt-6 border-t border-white/8 pt-5 text-sm text-white/55 whitespace-pre-line">
+                    {featuredNews.body || featuredNews.excerpt}
+                  </div>
+                </article>
               )}
+              <div className="grid gap-4">
+                {supportingNews.map((item) => (
+                  <article key={item.id} className="glass p-6" data-testid={`news-${item.id}`}>
+                    <div className="text-[11px] text-orange-400 uppercase tracking-[0.3em]">{new Date(item.date).toLocaleDateString("fr-FR")}</div>
+                    <h4 className="font-display text-xl uppercase mt-3">{item.title}</h4>
+                    <p className="text-sm text-white/60 mt-3">{item.excerpt}</p>
+                  </article>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
+          </>
+        )}
 
-        {/* NEWS */}
-        <SectionTitle sub="Actualité" title="Dernières news"/>
-        <div className="grid xl:grid-cols-[1.15fr_0.85fr] gap-4">
-          {featuredNews ? (
-            <article className="glass p-8 border border-orange-500/20" data-testid={`news-${featuredNews.id}`}>
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <Badge variant="soon">A la une</Badge>
-                <div className="text-xs text-orange-400 uppercase tracking-widest">{new Date(featuredNews.date).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" })}</div>
-              </div>
-              <h3 className="font-display text-3xl sm:text-4xl uppercase mt-5">{featuredNews.title}</h3>
-              <p className="text-white/70 mt-4 text-lg">{featuredNews.excerpt}</p>
-              <div className="mt-6 border-t border-white/8 pt-5 text-sm text-white/55 whitespace-pre-line">
-                {featuredNews.body || featuredNews.excerpt}
-              </div>
-            </article>
-          ) : (
-            <div className="glass p-8 text-white/40">Aucune news publiee pour le moment.</div>
-          )}
-          <div className="grid gap-4">
-            {supportingNews.map((item) => (
-              <article key={item.id} className="glass p-6" data-testid={`news-${item.id}`}>
-                <div className="text-[11px] text-orange-400 uppercase tracking-[0.3em]">{new Date(item.date).toLocaleDateString("fr-FR")}</div>
-                <h4 className="font-display text-xl uppercase mt-3">{item.title}</h4>
-                <p className="text-sm text-white/60 mt-3">{item.excerpt}</p>
-              </article>
-            ))}
-            {!supportingNews.length && featuredNews && (
-              <div className="glass p-6 text-white/35">Les prochaines news apparaitront ici en pile rapide.</div>
-            )}
-          </div>
-        </div>
-
-        <SectionTitle sub="Communauté" title="Concours actifs" cta={<Link to="/concours" className="btn-ghost"><Ticket size={14}/>Voir tout</Link>}/>
-        <div className="grid md:grid-cols-2 gap-4">
-          {topContests.length === 0 && <div className="glass p-6 text-white/40">Aucun concours public actif.</div>}
-          {topContests.map((contest) => (
-            <div key={contest.id} className="glass p-6" style={{ borderColor: `${contest.banner_color || "#FF4600"}55` }}>
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <Badge variant="soon">{contest.remaining_slots === 0 ? "Complet" : "Ouvert"}</Badge>
-                <span className="text-xs uppercase tracking-widest text-white/40">{contest.entries_count} / {contest.max_entries} participations</span>
-              </div>
-              <h3 className="font-display text-2xl uppercase mt-4">{contest.title}</h3>
-              <p className="text-white/60 mt-3">{contest.summary}</p>
-              <div className="text-sm text-white/50 mt-4">Lot: <span className="text-white">{contest.reward_label || "Annonce a venir"}</span></div>
-              <Link to="/concours" className="btn-ghost mt-5">
-                {contest.cta_label || "Participer"} <ChevronRight size={14}/>
-              </Link>
-            </div>
-          ))}
-        </div>
-
-        <SectionTitle sub="Jetons" title="Boutique de points" cta={<Link to="/boutique" className="btn-ghost"><ShoppingBag size={14}/>Ouvrir la boutique</Link>}/>
-        <div className="grid md:grid-cols-3 gap-4">
-          {featuredRewards.length === 0 && <div className="glass p-6 text-white/40">Aucune reward active pour le moment.</div>}
-          {featuredRewards.map((reward) => (
-            <div key={reward.id} className="glass p-6" style={{ borderColor: `${reward.accent_color || "#00F0FF"}55` }}>
-              <div className="flex items-center justify-between gap-3">
-                <Badge variant={reward.stock > 0 ? "verified" : "offline"}>{reward.category}</Badge>
-                <span className="font-display text-yellow-neon">{reward.cost_tokens} pts</span>
-              </div>
-              <h3 className="font-display text-xl uppercase mt-4">{reward.title}</h3>
-              <p className="text-white/60 mt-3">{reward.summary}</p>
-              <div className="text-xs uppercase tracking-widest text-white/40 mt-4">Stock restant: {reward.stock}</div>
-            </div>
-          ))}
-        </div>
-
-        <SectionTitle sub="Autopilote" title="Comment ReadyUp Arena fonctionne"/>
-        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {HOW_READYUP_WORKS.map((step) => {
-            const Icon = step.icon;
-            return (
-              <div key={step.title} className="glass p-6">
-                <div className="w-11 h-11 border border-orange-500/30 bg-orange-500/10 flex items-center justify-center">
-                  <Icon size={20} className="text-orange-500"/>
+        {showContests && (
+          <>
+            <SectionTitle sub="Communauté" title="Concours actifs" cta={<Link to="/concours" className="btn-ghost"><Ticket size={14}/>Voir tout</Link>}/>
+            <div className="grid md:grid-cols-2 gap-4">
+              {topContests.map((contest) => (
+                <div key={contest.id} className="glass p-6" style={{ borderColor: `${contest.banner_color || "#FF4600"}55` }}>
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <Badge variant="soon">{contest.remaining_slots === 0 ? "Complet" : "Ouvert"}</Badge>
+                    <span className="text-xs uppercase tracking-widest text-white/40">{contest.entries_count} / {contest.max_entries} participations</span>
+                  </div>
+                  <h3 className="font-display text-2xl uppercase mt-4">{contest.title}</h3>
+                  <p className="text-white/60 mt-3">{contest.summary}</p>
+                  <div className="text-sm text-white/50 mt-4">Lot: <span className="text-white">{contest.reward_label || "Annonce a venir"}</span></div>
+                  <Link to="/concours" className="btn-ghost mt-5">
+                    {contest.cta_label || "Participer"} <ChevronRight size={14}/>
+                  </Link>
                 </div>
-                <h3 className="font-display text-xl mt-4 uppercase">{step.title}</h3>
-                <p className="text-sm text-white/60 mt-3">{step.text}</p>
-              </div>
-            );
-          })}
-        </div>
+              ))}
+            </div>
+          </>
+        )}
 
-        <SectionTitle sub="Ressources" title="FAQ, partenaires et support"/>
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <Link to="/faq" className="glass glass-hover p-6 block">
-            <div className="text-xs uppercase tracking-[0.3em] text-orange-500">FAQ</div>
-            <h3 className="font-display text-2xl mt-3 uppercase">Questions clés de la beta</h3>
-            <p className="text-white/60 mt-3">Steam vérifié, gratuité des tournois, renforts, fonctionnement CS2 et règles d'équité.</p>
-          </Link>
-          <Link to="/partners" className="glass glass-hover p-6 block">
-            <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Partenaires</div>
-            <h3 className="font-display text-2xl mt-3 uppercase">Sponsoring et communautés</h3>
-            <p className="text-white/60 mt-3">La beta prépare déjà la place pour lots sponsorisés, relais Discord et support événementiel.</p>
-          </Link>
-          <Link to="/contact" className="glass glass-hover p-6 block">
-            <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Contact</div>
-            <h3 className="font-display text-2xl mt-3 uppercase">Bugs, orga et candidatures</h3>
-            <p className="text-white/60 mt-3">Un point d'entrée unique pour remonter un bug, proposer un tournoi ou rejoindre l'équipe projet.</p>
-          </Link>
-        </div>
-
-        <SectionTitle sub="Communauté" title="Soutiens récents" cta={<Link to="/support" className="btn-ghost" data-testid="donate-cta-home"><Heart size={14}/>Faire un don</Link>}/>}
+        <SectionTitle sub="Communauté" title="Soutiens récents" cta={<Link to="/support" className="btn-ghost" data-testid="donate-cta-home"><Heart size={14}/>Faire un don</Link>}/>
         <RecentDonors/>
+
       </div>
     </div>
   );
-};
-
-const RecentDonors = () => {
-  const [donors, setDonors] = useState([]);
-  useEffect(() => { axios.get(`${API}/donations/recent?limit=5`).then(r => setDonors(r.data)).catch(()=>{}); }, []);
-  if (donors.length === 0) return (
-    <div className="glass p-6 text-center text-white/40" data-testid="no-donors">
-      Soyez le premier à soutenir la plateforme ❤️ — <Link to="/donate" className="text-orange-500">Faire un don</Link>
-    </div>);
-  return (
-    <div className="grid md:grid-cols-5 gap-3" data-testid="recent-donors">
-      {donors.map((d,i) => (
-        <div key={i} className="glass p-4 text-center">
-          <Heart className="text-red-500 mx-auto" size={24}/>
-          <div className="font-display text-2xl text-yellow-neon mt-2">{d.amount_eur}€</div>
-          <div className="text-xs text-white/40 uppercase tracking-widest">{d.kind === "monthly" ? "Mensuel" : "Ponctuel"}</div>
-          <div className="text-[10px] text-white/30 mt-1">{new Date(d.at).toLocaleDateString("fr-FR")}</div>
-        </div>))}
-    </div>);
 };
 
 const tournamentRegisteredCount = (t) => t?.registered_effective ?? t?.registered ?? 0;
@@ -3147,7 +3020,7 @@ const StatusPage = () => {
   useEffect(() => {
     const load = async () => {
       const [healthResult, statsResult] = await Promise.allSettled([
-        axios.get(`${BACKEND_BASE_URL}/health/ready`),
+        axios.get(HEALTH_API),
         axios.get(`${API}/stats/global`),
       ]);
 
@@ -3213,7 +3086,7 @@ const Cs2Hub = () => {
     const load = async () => {
       setLoading(true);
       const [healthResult, serversResult, matchesResult, eventsResult] = await Promise.allSettled([
-          axios.get(`${BACKEND_BASE_URL}/health/ready`),
+          axios.get(HEALTH_API),
           axios.get(`${API}/cs2/servers`),
           axios.get(`${API}/matches/live`),
           axios.get(`${API}/cs2/events?limit=6`),
