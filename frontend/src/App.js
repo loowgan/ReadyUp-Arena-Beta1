@@ -16,11 +16,33 @@ const Logo = ({ size = 40 }) => (
 
 const NavBar = () => {
   const loc = useLocation();
+  const { user } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const testMenuLinks = [
+    { to: "/", label: "Accueil", icon: Flame },
+    { to: "/tournaments", label: "Tournois", icon: Trophy },
+    { to: "/teams", label: "Equipes", icon: Users },
+    { to: "/rankings", label: "Classements", icon: Award },
+    { to: "/live", label: "En direct", icon: Radio },
+    { to: "/fun-5v5", label: "Fun 5v5", icon: Gamepad2 },
+    { to: "/duels", label: "Duels 1v1", icon: Swords },
+    { to: "/concours", label: "Concours", icon: Ticket },
+    { to: "/boutique", label: "Boutique", icon: ShoppingBag },
+    { to: "/community", label: "Communaute", icon: Heart },
+    { to: "/faq", label: "FAQ", icon: Shield },
+    { to: "/partners", label: "Partenaires", icon: Star },
+    { to: "/contact", label: "Contact", icon: Heart },
+    { to: "/status", label: "Status", icon: Server },
+    { to: "/profile", label: "Profil", icon: User },
+    { to: "/support", label: "Support", icon: Gift },
+  ];
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [loc.pathname]);
   const links = [
     { to: "/", label: "Accueil" }, { to: "/tournaments", label: "Tournois" },
     { to: "/teams", label: "Équipes" }, { to: "/rankings", label: "Classements" },
-    { to: "/duels", label: "Duels 1v1" }, { to: "/boutique", label: "Boutique" }, { to: "/cs2", label: "CS2" },
-    { to: "/live", label: "En direct" }, { to: "/admin", label: "Admin" },
+    { to: "/live", label: "En direct" },
   ];
   return (
     <nav className="sticky top-0 z-50 glass border-b border-white/5" data-testid="main-nav">
@@ -33,6 +55,55 @@ const NavBar = () => {
               {l.label}
             </Link>
           ))}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setMenuOpen((value) => !value)}
+              className={`px-4 py-2 text-sm font-display tracking-widest uppercase transition-colors flex items-center gap-2 ${testMenuLinks.some((item) => loc.pathname === item.to) ? "text-orange-500" : "text-white/70 hover:text-white"}`}
+              data-testid="nav-test-toggle"
+            >
+              Menu test
+              <ChevronRight size={14} className={`transition-transform ${menuOpen ? "rotate-90" : ""}`}/>
+            </button>
+            {menuOpen && (
+              <div className="absolute top-full left-0 mt-2 min-w-[420px] glass border border-white/10 p-2 z-50" data-testid="nav-test-menu">
+                <div className="grid grid-cols-2 gap-1">
+                {testMenuLinks.map((item) => (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    onClick={() => setMenuOpen(false)}
+                    className={`flex items-center gap-3 px-3 py-3 text-sm font-display uppercase tracking-wider transition-colors ${loc.pathname === item.to ? "text-orange-500 bg-white/5" : "text-white/75 hover:text-white hover:bg-white/5"}`}
+                    data-testid={`nav-test-${item.label.toLowerCase().replace(/\s/g, "-")}`}
+                  >
+                    <item.icon size={14}/>
+                    {item.label}
+                  </Link>
+                ))}
+                {user?.is_admin && (
+                  <Link
+                    to="/admin"
+                    onClick={() => setMenuOpen(false)}
+                    className={`flex items-center gap-3 px-3 py-3 text-sm font-display uppercase tracking-wider transition-colors ${loc.pathname === "/admin" ? "text-orange-500 bg-white/5" : "text-white/75 hover:text-white hover:bg-white/5"}`}
+                    data-testid="nav-test-admin"
+                  >
+                    <Lock size={14}/>
+                    Admin
+                  </Link>
+                )}
+                </div>
+              </div>
+            )}
+          </div>
+          {user?.is_admin && (
+            <Link
+              to="/admin"
+              data-testid="nav-link-admin"
+              className={`px-4 py-2 text-sm font-display tracking-widest uppercase transition-colors ${loc.pathname === "/admin" ? "text-orange-500" : "text-white/70 hover:text-white"}`}
+            >
+              Admin
+            </Link>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Link to="/support" className="btn-ghost" data-testid="nav-donate-btn"><Heart size={14}/>Soutenir</Link>
@@ -48,7 +119,7 @@ const Footer = () => (
     <div className="max-w-7xl mx-auto grid md:grid-cols-4 gap-8 text-sm">
       <div><Logo size={28}/><p className="text-white/50 mt-3">Plateforme indépendante de tournois e-sport CS2. Non affiliée à Valve.</p></div>
       <div><h4 className="font-display uppercase tracking-widest text-white mb-3">Plateforme</h4>
-        <ul className="space-y-2 text-white/60"><li><Link to="/tournaments">Tournois</Link></li><li><Link to="/teams">Équipes</Link></li><li><Link to="/rankings">Classements</Link></li><li><Link to="/cs2">Hub CS2</Link></li><li><Link to="/boutique">Boutique points</Link></li></ul></div>
+        <ul className="space-y-2 text-white/60"><li><Link to="/tournaments">Tournois</Link></li><li><Link to="/teams">Équipes</Link></li><li><Link to="/rankings">Classements</Link></li><li><Link to="/fun-5v5">Fun 5v5</Link></li><li><Link to="/boutique">Boutique points</Link></li></ul></div>
       <div><h4 className="font-display uppercase tracking-widest text-white mb-3">Communauté</h4>
         <ul className="space-y-2 text-white/60"><li><Link to="/faq">FAQ</Link></li><li><Link to="/community">Communauté</Link></li><li><Link to="/concours">Concours</Link></li><li><Link to="/partners">Partenaires</Link></li><li><Link to="/support">Faire un don</Link></li></ul></div>
       <div><h4 className="font-display uppercase tracking-widest text-white mb-3">Légal</h4>
@@ -183,6 +254,12 @@ const makeTeamForm = () => ({
   logo_color: "#FF4600",
   recruitment_status: "open",
   members_limit: 7,
+});
+
+const makeFunMatchForm = () => ({
+  title: "Lobby fun 5v5",
+  description: "",
+  map: "de_mirage",
 });
 
 const makeNewsForm = () => ({
@@ -477,6 +554,8 @@ const Home = () => {
   const openTournaments = tournaments.filter((t) => ["open", "registering"].includes(t.status)).slice(0, 3);
   const topContests = contests.slice(0, 2);
   const featuredRewards = rewards.slice(0, 3);
+  const featuredNews = news[0] || null;
+  const supportingNews = news.slice(1, 5);
   const liveBadgeVariant = live?.live ? "live" : live?.configured ? "soon" : "offline";
   const liveBadgeLabel = live?.live ? "LIVE" : live?.configured ? "HORS LIGNE" : "FLUX EMBARQUE";
   const livePanelLabel = live?.live ? "EN DIRECT" : live?.configured ? "CHAINE OFFLINE" : "STATUT NON CONFIGURE";
@@ -504,6 +583,7 @@ const Home = () => {
             <div className="mt-8 flex flex-wrap gap-3">
               <Link to="/teams" className="btn-neon" data-testid="hero-cta-team"><Users size={16}/>Créer une équipe</Link>
               <Link to="/tournaments" className="btn-ghost" data-testid="hero-cta-tournaments"><Trophy size={16}/>Voir les tournois</Link>
+              <Link to="/fun-5v5" className="btn-ghost" data-testid="hero-cta-fun-5v5"><Gamepad2 size={16}/>Match fun 5v5</Link>
               <Link to="/waiting-room/tr1" className="btn-ghost" data-testid="hero-cta-match"><Swords size={16}/>Trouver un match</Link>
               <Link to="/community" className="btn-ghost" data-testid="hero-cta-community"><Radio size={16}/>Rejoindre la communauté</Link>
             </div>
@@ -650,13 +730,34 @@ const Home = () => {
 
         {/* NEWS */}
         <SectionTitle sub="Actualité" title="Dernières news"/>
-        <div className="grid md:grid-cols-3 gap-4">
-          {news.map(n => (
-            <div key={n.id} className="glass p-6" data-testid={`news-${n.id}`}>
-              <div className="text-xs text-orange-400 uppercase tracking-widest">{new Date(n.date).toLocaleDateString("fr-FR")}</div>
-              <h4 className="font-display text-lg mt-2">{n.title}</h4>
-              <p className="text-sm text-white/60 mt-2">{n.excerpt}</p>
-            </div>))}
+        <div className="grid xl:grid-cols-[1.15fr_0.85fr] gap-4">
+          {featuredNews ? (
+            <article className="glass p-8 border border-orange-500/20" data-testid={`news-${featuredNews.id}`}>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <Badge variant="soon">A la une</Badge>
+                <div className="text-xs text-orange-400 uppercase tracking-widest">{new Date(featuredNews.date).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" })}</div>
+              </div>
+              <h3 className="font-display text-3xl sm:text-4xl uppercase mt-5">{featuredNews.title}</h3>
+              <p className="text-white/70 mt-4 text-lg">{featuredNews.excerpt}</p>
+              <div className="mt-6 border-t border-white/8 pt-5 text-sm text-white/55 whitespace-pre-line">
+                {featuredNews.body || featuredNews.excerpt}
+              </div>
+            </article>
+          ) : (
+            <div className="glass p-8 text-white/40">Aucune news publiee pour le moment.</div>
+          )}
+          <div className="grid gap-4">
+            {supportingNews.map((item) => (
+              <article key={item.id} className="glass p-6" data-testid={`news-${item.id}`}>
+                <div className="text-[11px] text-orange-400 uppercase tracking-[0.3em]">{new Date(item.date).toLocaleDateString("fr-FR")}</div>
+                <h4 className="font-display text-xl uppercase mt-3">{item.title}</h4>
+                <p className="text-sm text-white/60 mt-3">{item.excerpt}</p>
+              </article>
+            ))}
+            {!supportingNews.length && featuredNews && (
+              <div className="glass p-6 text-white/35">Les prochaines news apparaitront ici en pile rapide.</div>
+            )}
+          </div>
         </div>
 
         <SectionTitle sub="Communauté" title="Concours actifs" cta={<Link to="/concours" className="btn-ghost"><Ticket size={14}/>Voir tout</Link>}/>
@@ -2204,6 +2305,221 @@ const Profile = () => {
           <div key={i} className="glass p-4 flex items-center gap-2" data-testid={`badge-${i}`}>
             <b.icon className={b.c} size={20}/><span className="font-display text-sm uppercase">{b.label}</span>
           </div>))}
+      </div>
+    </div>
+  );
+};
+
+/* ============== FUN MATCHES ============== */
+const FunMatchesPage = () => {
+  const { token, user } = useAuth();
+  const [matches, setMatches] = useState([]);
+  const [form, setForm] = useState(makeFunMatchForm());
+  const [busyKey, setBusyKey] = useState("");
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+
+  const refresh = useCallback(async () => {
+    const response = await axios.get(`${API}/fun-matches`);
+    setMatches(response.data || []);
+  }, []);
+
+  useEffect(() => {
+    refresh().catch(() => {});
+    const id = setInterval(() => { refresh().catch(() => {}); }, 5000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const createMatch = async (event) => {
+    event.preventDefault();
+    setBusyKey("create");
+    try {
+      await axios.post(`${API}/fun-matches`, form, { headers: authH });
+      setForm(makeFunMatchForm());
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur match fun");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const joinMatch = async (matchId) => {
+    setBusyKey(`join-${matchId}`);
+    try {
+      await axios.post(`${API}/fun-matches/${matchId}/join`, {}, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur match fun");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const leaveMatch = async (matchId) => {
+    setBusyKey(`leave-${matchId}`);
+    try {
+      await axios.post(`${API}/fun-matches/${matchId}/leave`, {}, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur match fun");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const rebalanceMatch = async (matchId) => {
+    setBusyKey(`rebalance-${matchId}`);
+    try {
+      await axios.post(`${API}/fun-matches/${matchId}/rebalance`, {}, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur match fun");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const closeMatch = async (matchId) => {
+    if (!window.confirm("Fermer ce lobby fun 5v5 ?")) return;
+    setBusyKey(`close-${matchId}`);
+    try {
+      await axios.post(`${API}/fun-matches/${matchId}/close`, {}, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur match fun");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const statusMeta = (status) => ({
+    open: { label: "Ouvert", variant: "soon" },
+    ready: { label: "Equipes pretes", variant: "verified" },
+    live: { label: "Live", variant: "live" },
+    closed: { label: "Ferme", variant: "offline" },
+  }[status] || { label: status || "Inconnu", variant: "offline" });
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="fun-matches-page">
+      <div className="flex items-center gap-3">
+        <Gamepad2 className="text-cyan-neon" size={32}/>
+        <h1 className="font-display text-5xl uppercase">Matchs Fun 5v5</h1>
+      </div>
+      <p className="text-white/50 mt-2">Lobbies rapides CS2. A 10 joueurs, le roster se compose automatiquement en 2 equipes de 5 equilibrees.</p>
+
+      {user ? (
+        <form onSubmit={createMatch} className="glass p-6 mt-6 grid lg:grid-cols-[1fr_1.2fr_220px_180px] gap-3 items-end">
+          <div>
+            <label className="text-xs uppercase tracking-widest text-white/40">Nom du lobby</label>
+            <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} minLength={3} maxLength={80} required />
+          </div>
+          <div>
+            <label className="text-xs uppercase tracking-widest text-white/40">Description</label>
+            <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} maxLength={500} placeholder="Fun match chill, mix elo, pracc..." />
+          </div>
+          <div>
+            <label className="text-xs uppercase tracking-widest text-white/40">Map</label>
+            <select value={form.map} onChange={(e) => setForm({ ...form, map: e.target.value })}>
+              {["de_mirage", "de_inferno", "de_anubis", "de_nuke", "de_ancient", "de_dust2", "de_vertigo"].map((map) => (
+                <option key={map} value={map}>{map}</option>
+              ))}
+            </select>
+          </div>
+          <button disabled={busyKey === "create"} className="btn-neon" data-testid="fun-match-create-btn">
+            <Plus size={14}/>{busyKey === "create" ? "Creation..." : "Creer un lobby"}
+          </button>
+        </form>
+      ) : (
+        <div className="glass p-6 mt-6 text-white/60">Connectez-vous et liez Steam pour creer ou rejoindre un match fun 5v5.</div>
+      )}
+
+      <SectionTitle sub="Queue rapide" title="Lobbies actifs"/>
+      <div className="grid xl:grid-cols-2 gap-6">
+        {matches.length === 0 && <div className="glass p-6 text-white/40">Aucun lobby fun actif pour le moment.</div>}
+        {matches.map((match) => {
+          const meta = statusMeta(match.status);
+          const isOwner = user?.id === match.creator_id;
+          const isParticipant = (match.players || []).some((player) => player.user_id === user?.id);
+          const canManage = isOwner || user?.is_admin;
+          return (
+            <div key={match.id} className="glass p-6 border border-white/8" data-testid={`fun-match-${match.id}`}>
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.3em] text-cyan-neon">Fun 5v5</div>
+                  <h2 className="font-display text-3xl uppercase mt-3">{match.title}</h2>
+                  <p className="text-white/60 mt-3">{match.description || "Lobby communautaire libre, compose pour des matchs fun et rapides."}</p>
+                </div>
+                <Badge variant={meta.variant}>{meta.label}</Badge>
+              </div>
+
+              <div className="grid sm:grid-cols-4 gap-3 mt-5">
+                <div className="border border-white/8 p-3"><div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Map</div><div className="font-display text-xl mt-2">{match.map}</div></div>
+                <div className="border border-white/8 p-3"><div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Joueurs</div><div className="font-display text-xl text-orange-500 mt-2">{match.players_count}/{match.player_cap}</div></div>
+                <div className="border border-white/8 p-3"><div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Places</div><div className="font-display text-xl mt-2">{match.slots_remaining}</div></div>
+                <div className="border border-white/8 p-3"><div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Createur</div><div className="text-sm mt-2 text-white/75">{match.creator_pseudo}</div></div>
+              </div>
+
+              <div className="mt-5 border border-white/8 p-4">
+                <div className="text-xs uppercase tracking-[0.3em] text-white/35">Joueurs inscrits</div>
+                <div className="flex flex-wrap gap-2 mt-4">
+                  {(match.players || []).map((player) => (
+                    <div key={`${match.id}-${player.user_id}`} className="px-3 py-2 border border-white/10 text-sm text-white/75 flex items-center gap-2">
+                      <span>{player.pseudo}</span>
+                      {player.steam_verified && <Shield size={12} className="text-cyan-neon"/>}
+                      <span className="text-white/35">ELO {formatMetric(player.elo)}</span>
+                    </div>
+                  ))}
+                  {!(match.players || []).length && <div className="text-white/35 text-sm">Aucun joueur inscrit.</div>}
+                </div>
+              </div>
+
+              {(match.teams || []).length > 0 && (
+                <div className="grid lg:grid-cols-2 gap-4 mt-5">
+                  {(match.teams || []).map((team) => (
+                    <div key={team.id} className="border p-4" style={{ borderColor: `${team.accent_color}55` }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-display text-xl uppercase" style={{ color: team.accent_color }}>{team.name}</div>
+                        <div className="text-xs text-white/45">AVG ELO {formatMetric(team.avg_elo)}</div>
+                      </div>
+                      <div className="space-y-2 mt-4">
+                        {(team.members || []).map((member) => (
+                          <div key={`${team.id}-${member.user_id}`} className="flex items-center justify-between gap-3 text-sm text-white/75">
+                            <span>{member.pseudo}</span>
+                            <span className="text-white/35">{formatMetric(member.elo)} ELO</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-3 mt-5">
+                {token && !isParticipant && match.status !== "closed" && match.slots_remaining > 0 && (
+                  <button onClick={() => joinMatch(match.id)} disabled={busyKey === `join-${match.id}`} className="btn-neon">
+                    <Users size={14}/>{busyKey === `join-${match.id}` ? "Connexion..." : "Rejoindre"}
+                  </button>
+                )}
+                {token && isParticipant && match.status !== "closed" && (
+                  <button onClick={() => leaveMatch(match.id)} disabled={busyKey === `leave-${match.id}`} className="btn-ghost">
+                    <Trash2 size={14}/>{busyKey === `leave-${match.id}` ? "Sortie..." : "Quitter"}
+                  </button>
+                )}
+                {canManage && match.ready_to_start && match.status !== "closed" && (
+                  <button onClick={() => rebalanceMatch(match.id)} disabled={busyKey === `rebalance-${match.id}`} className="btn-ghost">
+                    <RefreshCw size={14}/>{busyKey === `rebalance-${match.id}` ? "Equilibrage..." : "Reequilibrer"}
+                  </button>
+                )}
+                {canManage && match.status !== "closed" && (
+                  <button onClick={() => closeMatch(match.id)} disabled={busyKey === `close-${match.id}`} className="btn-ghost text-red-400">
+                    <Lock size={14}/>{busyKey === `close-${match.id}` ? "Fermeture..." : "Fermer"}
+                  </button>
+                )}
+                <div className="text-sm text-white/45">Auto-equilibrage a 10 joueurs. 1 compte = 1 lobby actif.</div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -3994,6 +4310,188 @@ const TournamentCrudAdmin = () => {
   );
 };
 
+const TeamAdmin = () => {
+  const { token, user } = useAuth();
+  const isAdmin = user?.is_admin;
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+  const [teams, setTeams] = useState([]);
+  const [selectedTeamId, setSelectedTeamId] = useState("");
+  const [form, setForm] = useState(makeTeamForm());
+  const [busyKey, setBusyKey] = useState("");
+
+  const refresh = useCallback(async () => {
+    if (!isAdmin) return;
+    const response = await axios.get(`${API}/admin/teams`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const rows = response.data || [];
+    setTeams(rows);
+    setSelectedTeamId((current) => (current && rows.some((team) => team.id === current) ? current : (rows[0]?.id || "")));
+  }, [isAdmin, token]);
+
+  useEffect(() => {
+    refresh().catch(() => {});
+  }, [refresh]);
+
+  const selectedTeam = teams.find((team) => team.id === selectedTeamId) || null;
+
+  useEffect(() => {
+    if (!selectedTeam) return;
+    setForm({
+      name: selectedTeam.name || "",
+      tag: selectedTeam.tag || "",
+      country: selectedTeam.country || "FR",
+      description: selectedTeam.description || "",
+      language: selectedTeam.language || "FR",
+      discord_url: selectedTeam.discord_url || "",
+      logo_color: selectedTeam.logo_color || "#FF4600",
+      recruitment_status: selectedTeam.recruitment_status || "open",
+      members_limit: selectedTeam.members_limit || 7,
+    });
+  }, [selectedTeam]);
+
+  const saveTeam = async (event) => {
+    event.preventDefault();
+    if (!selectedTeam) return;
+    setBusyKey(`save-${selectedTeam.id}`);
+    try {
+      await axios.patch(`${API}/admin/teams/${selectedTeam.id}`, { ...form, members_limit: Number(form.members_limit) }, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur equipe");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const deleteTeam = async (teamId) => {
+    if (!window.confirm("Supprimer cette equipe ?")) return;
+    setBusyKey(`delete-${teamId}`);
+    try {
+      await axios.delete(`${API}/admin/teams/${teamId}`, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur equipe");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const promoteCaptain = async (teamId, member) => {
+    setBusyKey(`captain-${teamId}-${member.id}`);
+    try {
+      await axios.post(`${API}/admin/teams/${teamId}/members/${member.id}/role`, { source: member.source, role: "captain" }, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur equipe");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const removeMember = async (teamId, member) => {
+    if (!window.confirm(`Retirer ${member.pseudo} de cette equipe ?`)) return;
+    setBusyKey(`remove-${teamId}-${member.id}`);
+    try {
+      await axios.post(`${API}/admin/teams/${teamId}/members/${member.id}/remove`, { source: member.source }, { headers: authH });
+      await refresh();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur equipe");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  if (!isAdmin) return null;
+
+  return (
+    <div data-testid="team-admin">
+      <SectionTitle sub="Gestion equipe" title="Equipes et membres"/>
+      <div className="grid xl:grid-cols-[0.9fr_1.1fr] gap-6">
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Selection</div>
+          <div className="space-y-3 mt-5">
+            {teams.length === 0 && <div className="text-white/35">Aucune equipe chargee.</div>}
+            {teams.map((team) => (
+              <button
+                key={team.id}
+                type="button"
+                onClick={() => setSelectedTeamId(team.id)}
+                className={`w-full text-left border p-4 transition-colors ${selectedTeamId === team.id ? "border-orange-500/60 bg-white/5" : "border-white/10 hover:border-white/20"}`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="font-display text-xl uppercase">{team.name}</div>
+                    <div className="text-xs text-white/45 mt-2">{team.tag} • {team.country} • {team.members_count}/{team.members_limit}</div>
+                  </div>
+                  <Badge variant={team.recruitment_status === "open" ? "soon" : "offline"}>{team.recruitment_status}</Badge>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="glass p-6">
+          {!selectedTeam && <div className="text-white/35">Choisissez une equipe pour la gerer.</div>}
+          {selectedTeam && (
+            <>
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="text-xs uppercase tracking-widest text-orange-500">Edition admin</div>
+                  <h3 className="font-display text-3xl uppercase mt-3">{selectedTeam.name}</h3>
+                </div>
+                <button onClick={() => deleteTeam(selectedTeam.id)} disabled={busyKey === `delete-${selectedTeam.id}`} className="btn-ghost text-red-400">
+                  <Trash2 size={14}/>{busyKey === `delete-${selectedTeam.id}` ? "Suppression..." : "Supprimer"}
+                </button>
+              </div>
+
+              <form onSubmit={saveTeam} className="grid md:grid-cols-2 gap-4 mt-6">
+                <div><label className="text-xs uppercase tracking-widest text-white/40">Nom</label><input value={form.name} onChange={(e)=>setForm({ ...form, name: e.target.value })} required /></div>
+                <div><label className="text-xs uppercase tracking-widest text-white/40">Tag</label><input value={form.tag} onChange={(e)=>setForm({ ...form, tag: e.target.value.toUpperCase() })} required /></div>
+                <div><label className="text-xs uppercase tracking-widest text-white/40">Pays</label><input value={form.country} onChange={(e)=>setForm({ ...form, country: e.target.value.toUpperCase() })} required /></div>
+                <div><label className="text-xs uppercase tracking-widest text-white/40">Langue</label><input value={form.language} onChange={(e)=>setForm({ ...form, language: e.target.value.toUpperCase() })} required /></div>
+                <div><label className="text-xs uppercase tracking-widest text-white/40">Couleur</label><input value={form.logo_color} onChange={(e)=>setForm({ ...form, logo_color: e.target.value })} required /></div>
+                <div><label className="text-xs uppercase tracking-widest text-white/40">Limite</label><input type="number" min="1" max="12" value={form.members_limit} onChange={(e)=>setForm({ ...form, members_limit: e.target.value })} required /></div>
+                <div><label className="text-xs uppercase tracking-widest text-white/40">Discord</label><input value={form.discord_url} onChange={(e)=>setForm({ ...form, discord_url: e.target.value })} /></div>
+                <div><label className="text-xs uppercase tracking-widest text-white/40">Recrutement</label><select value={form.recruitment_status} onChange={(e)=>setForm({ ...form, recruitment_status: e.target.value })}><option value="open">Ouvert</option><option value="closed">Ferme</option></select></div>
+                <div className="md:col-span-2"><label className="text-xs uppercase tracking-widest text-white/40">Description</label><textarea rows={4} value={form.description} onChange={(e)=>setForm({ ...form, description: e.target.value })} /></div>
+                <div className="md:col-span-2"><button disabled={busyKey === `save-${selectedTeam.id}`} className="btn-neon"><Shield size={14}/>{busyKey === `save-${selectedTeam.id}` ? "Sauvegarde..." : "Sauvegarder"}</button></div>
+              </form>
+
+              <div className="mt-8">
+                <div className="text-xs uppercase tracking-widest text-yellow-neon">Gestion des membres</div>
+                <div className="space-y-3 mt-4">
+                  {(selectedTeam.members || []).map((member) => (
+                    <div key={`${selectedTeam.id}-${member.source}-${member.id}`} className="border border-white/10 p-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <div className="font-display uppercase flex items-center gap-2">
+                          <span>{member.pseudo}</span>
+                          {member.team_role === "captain" && <Badge variant="verified">Capitaine</Badge>}
+                          {member.source === "seed" && <Badge variant="offline">Seed</Badge>}
+                        </div>
+                        <div className="text-xs text-white/45 mt-2">{member.role || "Polyvalent"} • ELO {formatMetric(member.elo)} • K/D {formatMetric(member.kdr, 2)}</div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {member.source === "user" && member.team_role !== "captain" && (
+                          <button onClick={() => promoteCaptain(selectedTeam.id, member)} disabled={busyKey === `captain-${selectedTeam.id}-${member.id}`} className="btn-ghost text-xs">
+                            <Crown size={14}/>{busyKey === `captain-${selectedTeam.id}-${member.id}` ? "Nomination..." : "Nommer capitaine"}
+                          </button>
+                        )}
+                        <button onClick={() => removeMember(selectedTeam.id, member)} disabled={busyKey === `remove-${selectedTeam.id}-${member.id}`} className="btn-ghost text-xs text-red-400">
+                          <Trash2 size={14}/>{busyKey === `remove-${selectedTeam.id}-${member.id}` ? "Retrait..." : "Retirer"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {!(selectedTeam.members || []).length && <div className="text-white/35">Aucun membre dans cette equipe.</div>}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const NewsAdmin = () => {
   const { token, user } = useAuth();
   const isAdmin = user?.is_admin;
@@ -4646,7 +5144,10 @@ const Admin = () => {
     setActiveTournaments(tournamentsResponse.data.filter((tournament) => tournament.status !== "closed").length);
     setOnlineNow(statsResponse.data.online_now || 0);
   };
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    if (!user?.is_admin) return;
+    refresh();
+  }, [user?.is_admin]);
 
   const issue = async (e) => {
     e.preventDefault(); setBusy(true);
@@ -4661,6 +5162,18 @@ const Admin = () => {
     try { await axios.post(`${API}/cards/${id}/revoke`, {}, { headers: authH }); await refresh(); }
     catch (e) { alert(e.response?.data?.detail || "Erreur"); }
   };
+
+  if (!user?.is_admin) {
+    return (
+      <div className="max-w-4xl mx-auto px-6 py-14" data-testid="admin-page-blocked">
+        <div className="glass p-8 border border-red-500/20">
+          <div className="text-xs uppercase tracking-[0.3em] text-red-400">Acces protege</div>
+          <h1 className="font-display text-4xl uppercase mt-4">Zone admin reservee</h1>
+          <p className="text-white/60 mt-4">Cette page n'est visible que pour les comptes administrateurs.</p>
+        </div>
+      </div>
+    );
+  }
 
   const yellows = cards.filter(c => c.severity === "yellow").length;
   const reds = cards.filter(c => c.severity === "red").length;
@@ -4714,6 +5227,7 @@ const Admin = () => {
       <MatchReportsAdmin/>
       <TournamentCrudAdmin/>
       <TournamentAdmin/>
+      <TeamAdmin/>
       <NewsAdmin/>
       <AnnouncementAdmin/>
       <ContestAdmin/>
@@ -4992,6 +5506,7 @@ function App() {
         <Route path="/teams" element={<TeamsPage/>}/>
         <Route path="/rankings" element={<Rankings/>}/>
         <Route path="/duels" element={<Duels/>}/>
+        <Route path="/fun-5v5" element={<FunMatchesPage/>}/>
         <Route path="/concours" element={<ContestsPage/>}/>
         <Route path="/boutique" element={<RewardsStorePage/>}/>
         <Route path="/cs2" element={<Cs2Hub/>}/>

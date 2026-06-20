@@ -64,6 +64,7 @@ from cs2 import (
 )
 from bracket import build_bracket_router
 from email_service import send_email, reset_email_html
+from fun_matches import FUN_MATCH_PLAYER_CAP, summarize_fun_match
 
 app = FastAPI(title="ReadyUp Arena API")
 api_router = APIRouter(prefix="/api")
@@ -1758,6 +1759,17 @@ class TeamApplicationReq(BaseModel):
     message: str = Field(default="", max_length=500)
 
 
+class TeamMemberAdminReq(BaseModel):
+    source: str = Field(default="user", pattern="^(user|seed)$")
+    role: Optional[str] = Field(default=None, pattern="^(captain|member)$")
+
+
+class FunMatchCreateReq(BaseModel):
+    title: str = Field(min_length=3, max_length=80)
+    description: str = Field(default="", max_length=500)
+    map: str = Field(default="de_dust2", min_length=2, max_length=32)
+
+
 async def _collect_team_members(team_id: str) -> list[dict]:
     user_members = await db.users.find(
         {"team_id": team_id},
@@ -1882,6 +1894,58 @@ async def _get_team_or_404(team_id: str) -> dict:
 
 def _is_team_captain(team: dict, user: dict) -> bool:
     return team.get("captain_user_id") == user["id"]
+
+
+async def _assign_team_captain(team_id: str, new_captain: dict) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_many({"team_id": team_id, "team_role": "captain"}, {"$set": {"team_role": "member"}})
+    await db.users.update_one({"id": new_captain["id"]}, {"$set": {"team_role": "captain"}})
+    await db.teams.update_one(
+        {"id": team_id},
+        {"$set": {"captain_user_id": new_captain["id"], "captain_pseudo": new_captain.get("pseudo"), "updated_at": now_iso}},
+    )
+
+
+async def _disband_team(team: dict, actor_user_id: str, reason: str, event_name: str = "team_disbanded") -> None:
+    team_id = team["id"]
+    await db.users.update_many({"team_id": team_id}, {"$set": {"team_id": None, "team_role": None}})
+    await db.players.update_many({"team_id": team_id}, {"$set": {"team_id": None}})
+    await db.teams.delete_one({"id": team_id})
+    await db.team_applications.delete_many({"team_id": team_id})
+    await db.tournament_registrations.delete_many({"entity_type": "team", "entity_id": team_id})
+    await journal(event_name, actor_user_id, {"team_id": team_id, "name": team.get("name"), "reason": reason})
+
+
+def _build_fun_match_player_entry(user: dict) -> dict:
+    return {
+        "user_id": user["id"],
+        "pseudo": user.get("pseudo"),
+        "steam_id": user.get("steam_id"),
+        "steam_verified": bool(user.get("steam_verified")),
+        "country": user.get("country") or "EU",
+        "elo": user.get("platform_elo", user.get("elo", 1000)),
+        "faceit_elo": user.get("faceit_elo"),
+        "kdr": _compute_kdr(user),
+        "reliability": user.get("reliability", 50),
+        "avatar_url": user.get("custom_avatar_url") or user.get("steam_avatar_url"),
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _get_fun_match_or_404(match_id: str) -> dict:
+    doc = await db.fun_matches.find_one({"id": match_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Match fun introuvable")
+    return doc
+
+
+async def _ensure_user_not_in_other_fun_match(user_id: str, exclude_match_id: Optional[str] = None) -> None:
+    docs = await db.fun_matches.find({"status": {"$in": ["open", "ready", "live"]}}, {"_id": 0, "id": 1, "players": 1}).to_list(200)
+    for doc in docs:
+        if exclude_match_id and str(doc.get("id")) == str(exclude_match_id):
+            continue
+        if any(str(player.get("user_id")) == str(user_id) for player in (doc.get("players") or [])):
+            raise HTTPException(409, "Vous etes deja inscrit dans un autre match fun actif")
 
 
 @api_router.get("/teams")
@@ -2074,16 +2138,214 @@ async def leave_team(team_id: str, user=Depends(get_current_user)):
         user_members = await db.users.find({"team_id": team_id}, {"_id": 0, "id": 1}).to_list(20)
         if len(user_members) > 1:
             raise HTTPException(400, "Transfert de capitanat requis avant de quitter l'equipe")
-        await db.users.update_one({"id": user["id"]}, {"$set": {"team_id": None, "team_role": None}})
-        await db.teams.delete_one({"id": team_id})
-        await db.team_applications.delete_many({"team_id": team_id})
-        await db.tournament_registrations.delete_many({"entity_type": "team", "entity_id": team_id})
-        await journal("team_disbanded", user["id"], {"team_id": team_id, "name": team.get("name")})
+        await _disband_team(team, user["id"], "captain_left_team")
         return {"ok": True, "disbanded": True}
 
     await db.users.update_one({"id": user["id"]}, {"$set": {"team_id": None, "team_role": None}})
     await journal("team_left", user["id"], {"team_id": team_id})
     return {"ok": True, "disbanded": False}
+
+
+@api_router.get("/admin/teams", dependencies=[Depends(get_admin_user)])
+async def admin_list_teams():
+    docs = await db.teams.find({}, {"_id": 0}).sort("elo", -1).to_list(200)
+    return [await _team_public(doc, include_members=True) for doc in docs]
+
+
+@api_router.patch("/admin/teams/{team_id}", dependencies=[Depends(get_admin_user)])
+async def admin_update_team(team_id: str, req: TeamUpdateReq, admin=Depends(get_admin_user)):
+    team = await _get_team_or_404(team_id)
+    members = await _collect_team_members(team_id)
+    if req.members_limit < len(members):
+        raise HTTPException(400, "La limite ne peut pas etre inferieure au nombre de membres")
+    duplicate = await db.teams.find_one(
+        {"id": {"$ne": team_id}, "$or": [{"name": req.name.strip()}, {"tag": req.tag.strip().upper()}]},
+        {"_id": 0, "id": 1},
+    )
+    if duplicate:
+        raise HTTPException(409, "Nom ou tag d'equipe deja utilise")
+    updates = {
+        "name": req.name.strip(),
+        "tag": req.tag.strip().upper(),
+        "logo_color": req.logo_color.strip(),
+        "country": req.country.strip().upper(),
+        "description": req.description.strip(),
+        "language": req.language.strip().upper(),
+        "discord_url": req.discord_url.strip() if req.discord_url else None,
+        "recruitment_status": req.recruitment_status,
+        "members_limit": req.members_limit,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.teams.update_one({"id": team_id}, {"$set": updates})
+    await journal("team_admin_updated", admin["id"], {"team_id": team_id, "name": team.get("name")})
+    updated = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    return await _team_public(updated, include_members=True)
+
+
+@api_router.delete("/admin/teams/{team_id}", dependencies=[Depends(get_admin_user)])
+async def admin_delete_team(team_id: str, admin=Depends(get_admin_user)):
+    team = await _get_team_or_404(team_id)
+    await _disband_team(team, admin["id"], "admin_deleted_team", event_name="team_admin_deleted")
+    return {"ok": True, "id": team_id}
+
+
+@api_router.post("/admin/teams/{team_id}/members/{member_id}/role", dependencies=[Depends(get_admin_user)])
+async def admin_set_team_member_role(team_id: str, member_id: str, req: TeamMemberAdminReq, admin=Depends(get_admin_user)):
+    team = await _get_team_or_404(team_id)
+    if req.source != "user":
+        raise HTTPException(400, "Seuls les comptes joueurs peuvent devenir capitaine")
+    member = await db.users.find_one({"id": member_id, "team_id": team_id}, {"_id": 0})
+    if not member:
+        raise HTTPException(404, "Membre introuvable")
+    if req.role == "captain":
+        await _assign_team_captain(team_id, member)
+        await journal("team_admin_captain_changed", admin["id"], {"team_id": team_id, "member_id": member_id})
+    elif team.get("captain_user_id") == member_id:
+        raise HTTPException(400, "Promouvez un autre joueur avant de retirer le capitanat")
+    else:
+        await db.users.update_one({"id": member_id}, {"$set": {"team_role": "member"}})
+        await journal("team_admin_role_changed", admin["id"], {"team_id": team_id, "member_id": member_id, "role": "member"})
+    updated = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    return await _team_public(updated, include_members=True)
+
+
+@api_router.post("/admin/teams/{team_id}/members/{member_id}/remove", dependencies=[Depends(get_admin_user)])
+async def admin_remove_team_member(team_id: str, member_id: str, req: TeamMemberAdminReq, admin=Depends(get_admin_user)):
+    team = await _get_team_or_404(team_id)
+    if req.source == "seed":
+        member = await db.players.find_one({"id": member_id, "team_id": team_id}, {"_id": 0})
+        if not member:
+            raise HTTPException(404, "Membre seed introuvable")
+        await db.players.update_one({"id": member_id}, {"$set": {"team_id": None}})
+        await journal("team_admin_member_removed", admin["id"], {"team_id": team_id, "member_id": member_id, "source": "seed"})
+    else:
+        member = await db.users.find_one({"id": member_id, "team_id": team_id}, {"_id": 0})
+        if not member:
+            raise HTTPException(404, "Membre introuvable")
+        if team.get("captain_user_id") == member_id:
+            other_users = await db.users.find({"team_id": team_id, "id": {"$ne": member_id}}, {"_id": 0}).to_list(20)
+            if other_users:
+                next_captain = sorted(other_users, key=lambda item: (str(item.get("team_role") or "") != "captain", str(item.get("pseudo") or "")))[0]
+                await _assign_team_captain(team_id, next_captain)
+                await db.users.update_one({"id": member_id}, {"$set": {"team_id": None, "team_role": None}})
+            else:
+                await _disband_team(team, admin["id"], "captain_removed_by_admin", event_name="team_admin_deleted")
+                return {"ok": True, "id": member_id, "disbanded": True}
+        else:
+            await db.users.update_one({"id": member_id}, {"$set": {"team_id": None, "team_role": None}})
+        await journal("team_admin_member_removed", admin["id"], {"team_id": team_id, "member_id": member_id, "source": "user"})
+    updated = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    return await _team_public(updated, include_members=True)
+
+
+@api_router.get("/fun-matches")
+async def list_fun_matches():
+    docs = await db.fun_matches.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return [summarize_fun_match(doc) for doc in docs]
+
+
+@api_router.get("/fun-matches/{match_id}")
+async def get_fun_match(match_id: str):
+    return summarize_fun_match(await _get_fun_match_or_404(match_id))
+
+
+@api_router.post("/fun-matches", dependencies=[Depends(get_current_user)])
+async def create_fun_match(req: FunMatchCreateReq, user=Depends(get_current_user)):
+    if not _has_steam_ready(user):
+        raise HTTPException(400, "Liez votre compte Steam avant de creer un match fun 5v5")
+    await _ensure_user_not_in_other_fun_match(user["id"])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": req.title.strip(),
+        "description": req.description.strip(),
+        "map": req.map.strip(),
+        "creator_id": user["id"],
+        "creator_pseudo": user["pseudo"],
+        "status": "open",
+        "players": [{**_build_fun_match_player_entry(user), "joined_at": now_iso}],
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "closed_at": None,
+    }
+    await db.fun_matches.insert_one(doc)
+    await journal("fun_match_created", user["id"], {"match_id": doc["id"], "title": doc["title"]})
+    return summarize_fun_match(doc)
+
+
+@api_router.post("/fun-matches/{match_id}/join", dependencies=[Depends(get_current_user)])
+async def join_fun_match(match_id: str, user=Depends(get_current_user)):
+    if not _has_steam_ready(user):
+        raise HTTPException(400, "Liez votre compte Steam avant de rejoindre un match fun 5v5")
+    doc = await _get_fun_match_or_404(match_id)
+    if doc.get("status") not in {"open", "ready"}:
+        raise HTTPException(400, "Ce match fun n'accepte plus de joueurs")
+    if any(str(player.get("user_id")) == str(user["id"]) for player in (doc.get("players") or [])):
+        return summarize_fun_match(doc)
+    if len(doc.get("players") or []) >= FUN_MATCH_PLAYER_CAP:
+        raise HTTPException(400, "Le lobby 5v5 est deja complet")
+    await _ensure_user_not_in_other_fun_match(user["id"], exclude_match_id=match_id)
+    players = [*list(doc.get("players") or []), _build_fun_match_player_entry(user)]
+    updates = {
+        "players": players,
+        "status": "ready" if len(players) >= FUN_MATCH_PLAYER_CAP else "open",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.fun_matches.update_one({"id": match_id}, {"$set": updates})
+    await journal("fun_match_joined", user["id"], {"match_id": match_id})
+    updated = await db.fun_matches.find_one({"id": match_id}, {"_id": 0})
+    return summarize_fun_match(updated)
+
+
+@api_router.post("/fun-matches/{match_id}/leave", dependencies=[Depends(get_current_user)])
+async def leave_fun_match(match_id: str, user=Depends(get_current_user)):
+    doc = await _get_fun_match_or_404(match_id)
+    if doc.get("status") not in {"open", "ready"}:
+        raise HTTPException(400, "Le lobby est deja verrouille")
+    players = [player for player in (doc.get("players") or []) if str(player.get("user_id")) != str(user["id"])]
+    if len(players) == len(doc.get("players") or []):
+        raise HTTPException(400, "Vous n'etes pas inscrit dans ce lobby")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updates: dict[str, Any] = {"players": players, "updated_at": now_iso}
+    if not players:
+        updates.update({"status": "closed", "closed_at": now_iso})
+    else:
+        updates["status"] = "ready" if len(players) >= FUN_MATCH_PLAYER_CAP else "open"
+        if str(doc.get("creator_id")) == str(user["id"]):
+            updates["creator_id"] = players[0]["user_id"]
+            updates["creator_pseudo"] = players[0]["pseudo"]
+    await db.fun_matches.update_one({"id": match_id}, {"$set": updates})
+    await journal("fun_match_left", user["id"], {"match_id": match_id})
+    updated = await db.fun_matches.find_one({"id": match_id}, {"_id": 0})
+    return summarize_fun_match(updated)
+
+
+@api_router.post("/fun-matches/{match_id}/rebalance", dependencies=[Depends(get_current_user)])
+async def rebalance_fun_match(match_id: str, user=Depends(get_current_user)):
+    doc = await _get_fun_match_or_404(match_id)
+    if user["id"] != doc.get("creator_id") and not is_admin_email(user.get("email")):
+        raise HTTPException(403, "Seul le createur ou un admin peut reequilibrer ce match")
+    if len(doc.get("players") or []) < FUN_MATCH_PLAYER_CAP:
+        raise HTTPException(400, "Il faut 10 joueurs pour generer les equipes 5v5")
+    await db.fun_matches.update_one(
+        {"id": match_id},
+        {"$set": {"status": "ready", "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await journal("fun_match_rebalanced", user["id"], {"match_id": match_id})
+    updated = await db.fun_matches.find_one({"id": match_id}, {"_id": 0})
+    return summarize_fun_match(updated)
+
+
+@api_router.post("/fun-matches/{match_id}/close", dependencies=[Depends(get_current_user)])
+async def close_fun_match(match_id: str, user=Depends(get_current_user)):
+    doc = await _get_fun_match_or_404(match_id)
+    if user["id"] != doc.get("creator_id") and not is_admin_email(user.get("email")):
+        raise HTTPException(403, "Seul le createur ou un admin peut fermer ce match")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.fun_matches.update_one({"id": match_id}, {"$set": {"status": "closed", "closed_at": now_iso, "updated_at": now_iso}})
+    await journal("fun_match_closed", user["id"], {"match_id": match_id})
+    updated = await db.fun_matches.find_one({"id": match_id}, {"_id": 0})
+    return summarize_fun_match(updated)
 
 @api_router.get("/players")
 async def list_players(available_only: bool = False):
