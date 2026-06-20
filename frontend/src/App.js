@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState, useRef } from "react";
 import { BrowserRouter, Routes, Route, Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
-import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertTriangle, Coins, Heart, ChevronRight, Play, Lock, CheckCircle2, Circle, Clock, Tv, ExternalLink, Star, TrendingUp, Award, Gamepad2, LogOut, User, Server, Terminal, Plus, Trash2, RefreshCw, Gift, ShoppingBag, Ticket, Package } from "lucide-react";
+import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertTriangle, Coins, Heart, ChevronRight, Play, Lock, CheckCircle2, Circle, Clock, Tv, Star, TrendingUp, Award, Gamepad2, LogOut, User, Server, Terminal, Plus, Trash2, RefreshCw, Gift, ShoppingBag, Ticket, Package } from "lucide-react";
 import { AuthProvider, useAuth } from "./AuthContext";
 import { API, BACKEND_BASE_URL, WS_BASE_URL } from "./lib/api";
 
@@ -15,6 +15,18 @@ const Logo = ({ size = 40 }) => (
     <img src="https://customer-assets.emergentagent.com/job_file-reader-108/artifacts/d88wsvtc_readyup-logo.png"
       alt="ReadyUp Arena" style={{ height: size * 1.6, width: "auto", filter: "drop-shadow(0 0 12px rgba(111, 229, 197, 0.4))" }}/>
   </div>
+);
+
+const DiscordMark = ({ className = "h-5 w-5" }) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+    <path d="M20.317 4.369A19.79 19.79 0 0 0 15.885 3a13.911 13.911 0 0 0-.662 1.357 18.27 18.27 0 0 0-5.447 0A13.54 13.54 0 0 0 9.114 3a19.736 19.736 0 0 0-4.434 1.371C1.88 8.583 1.12 12.69 1.5 16.74A19.92 19.92 0 0 0 6.946 19a14.33 14.33 0 0 0 1.17-1.908 12.955 12.955 0 0 1-1.84-.885c.155-.113.307-.23.454-.351 3.548 1.635 7.395 1.635 10.901 0 .149.121.301.238.456.351-.586.342-1.2.638-1.842.885.338.667.73 1.305 1.172 1.908a19.87 19.87 0 0 0 5.448-2.26c.446-4.696-.762-8.767-3.048-12.371ZM8.955 14.305c-1.063 0-1.935-.972-1.935-2.164 0-1.193.854-2.164 1.935-2.164 1.09 0 1.953.98 1.935 2.164 0 1.192-.854 2.164-1.935 2.164Zm6.09 0c-1.063 0-1.935-.972-1.935-2.164 0-1.193.854-2.164 1.935-2.164 1.09 0 1.953.98 1.935 2.164 0 1.192-.845 2.164-1.935 2.164Z"/>
+  </svg>
+);
+
+const SteamMark = ({ className = "h-5 w-5" }) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+    <path d="M11.979 2C6.47 2 2 6.479 2 12.002c0 4.425 2.876 8.179 6.855 9.504.5.092.683-.217.683-.483 0-.237-.009-.866-.014-1.7-2.788.607-3.377-1.345-3.377-1.345-.455-1.158-1.11-1.466-1.11-1.466-.909-.62.069-.608.069-.608 1.004.071 1.532 1.032 1.532 1.032.892 1.53 2.341 1.088 2.91.833.091-.647.349-1.088.635-1.338-2.226-.254-4.566-1.114-4.566-4.956 0-1.094.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.651 0 0 .84-.269 2.75 1.026A9.564 9.564 0 0 1 12 6.838a9.58 9.58 0 0 1 2.504.337c1.909-1.295 2.748-1.026 2.748-1.026.546 1.379.202 2.398.1 2.651.64.7 1.028 1.594 1.028 2.688 0 3.852-2.343 4.699-4.576 4.947.359.309.679.919.679 1.852 0 1.336-.012 2.414-.012 2.742 0 .269.18.58.688.481A10.008 10.008 0 0 0 22 12.002C22 6.479 17.522 2 11.979 2Z"/>
+  </svg>
 );
 
 const NavBar = () => {
@@ -42,16 +54,16 @@ const NavBar = () => {
   useEffect(() => {
     setMenuOpen(false);
   }, [loc.pathname]);
-  const links = [
+  /*
     { to: "/", label: "Accueil" }, { to: "/tournaments", label: "Tournois" },
     { to: "/teams", label: "Équipes" }, { to: "/rankings", label: "Classements" },
     { to: "/live", label: "En direct" },
-  ];
+  */
   return (
     <nav className="sticky top-0 z-50 glass border-b border-white/5" data-testid="main-nav">
-      <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+      <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-3">
         <Link to="/" data-testid="nav-home-logo"><Logo /></Link>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 mr-auto">
           <div className="relative">
             <button
               type="button"
@@ -96,28 +108,28 @@ const NavBar = () => {
             href={DISCORD_URL}
             target="_blank"
             rel="noreferrer"
-            className="group inline-flex items-center gap-2 rounded-full border border-[#6fe5c5]/35 bg-[linear-gradient(135deg,rgba(111,229,197,0.18),rgba(34,197,94,0.08))] px-4 py-2 text-[11px] font-display uppercase tracking-[0.24em] text-[#c7fff1] shadow-[0_0_24px_rgba(111,229,197,0.16)] transition-all hover:-translate-y-0.5 hover:border-[#6fe5c5]/60 hover:shadow-[0_0_28px_rgba(111,229,197,0.24)]"
+            title="Discord ReadyUp Arena"
+            className="group inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#6fe5c5]/35 bg-[linear-gradient(135deg,rgba(111,229,197,0.18),rgba(34,197,94,0.08))] text-[#c7fff1] shadow-[0_0_24px_rgba(111,229,197,0.16)] transition-all hover:-translate-y-0.5 hover:border-[#6fe5c5]/60 hover:shadow-[0_0_28px_rgba(111,229,197,0.24)]"
             data-testid="nav-discord-btn"
             aria-label="Rejoindre le Discord ReadyUp Arena"
           >
-            <Radio size={14}/>
-            <span className="hidden sm:inline">Discord</span>
-            <ExternalLink size={12} className="opacity-70 transition-transform group-hover:translate-x-0.5"/>
+            <DiscordMark className="h-5 w-5 transition-transform group-hover:scale-110"/>
+            <span className="sr-only">Discord</span>
           </a>
           <a
             href={STEAM_GROUP_URL}
             target="_blank"
             rel="noreferrer"
-            className="group inline-flex items-center gap-2 rounded-full border border-[#f8b84e]/35 bg-[linear-gradient(135deg,rgba(248,184,78,0.18),rgba(249,115,22,0.08))] px-4 py-2 text-[11px] font-display uppercase tracking-[0.24em] text-[#ffe2ad] shadow-[0_0_24px_rgba(248,184,78,0.16)] transition-all hover:-translate-y-0.5 hover:border-[#f8b84e]/60 hover:shadow-[0_0_28px_rgba(248,184,78,0.24)]"
+            title="Groupe Steam ReadyUp Arena"
+            className="group inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#f8b84e]/35 bg-[linear-gradient(135deg,rgba(248,184,78,0.18),rgba(249,115,22,0.08))] text-[#ffe2ad] shadow-[0_0_24px_rgba(248,184,78,0.16)] transition-all hover:-translate-y-0.5 hover:border-[#f8b84e]/60 hover:shadow-[0_0_28px_rgba(248,184,78,0.24)]"
             data-testid="nav-steam-group-btn"
             aria-label="Rejoindre le groupe Steam ReadyUp Arena"
           >
-            <Users size={14}/>
-            <span className="hidden sm:inline">Groupe Steam</span>
-            <ExternalLink size={12} className="opacity-70 transition-transform group-hover:translate-x-0.5"/>
+            <SteamMark className="h-5 w-5 transition-transform group-hover:scale-110"/>
+            <span className="sr-only">Groupe Steam</span>
           </a>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2">
           <Link to="/support" className="btn-ghost" data-testid="nav-donate-btn"><Heart size={14}/>Soutenir</Link>
           <AuthZone/>
         </div>
