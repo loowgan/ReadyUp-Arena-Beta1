@@ -3010,13 +3010,49 @@ def _backend_base(request: Request) -> str:
     # External URL for OpenID realm/return_to
     return os.environ.get("BACKEND_PUBLIC_URL") or str(request.base_url).rstrip("/")
 
-def _frontend_base() -> str:
-    return env_text("FRONTEND_URL", DEFAULT_FRONTEND_URL).rstrip("/")
+def _public_origin(value: Optional[str]) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
-def _steam_openid_redirect_url(backend: str, link_token: Optional[str] = None) -> str:
+def _frontend_origin_from_request(request: Optional[Request]) -> Optional[str]:
+    if not request:
+        return None
+    for candidate in (
+        request.query_params.get("frontend_origin"),
+        request.headers.get("origin"),
+        request.headers.get("referer"),
+    ):
+        origin = _public_origin(candidate)
+        if origin:
+            return origin
+    return None
+
+def _frontend_base(request: Optional[Request] = None) -> str:
+    configured = _public_origin(env_text("FRONTEND_URL"))
+    if configured:
+        return configured
+    inferred = _frontend_origin_from_request(request)
+    if inferred:
+        return inferred
+    return DEFAULT_FRONTEND_URL.rstrip("/")
+
+def _steam_openid_redirect_url(backend: str, link_token: Optional[str] = None, frontend_origin: Optional[str] = None) -> str:
     callback_url = f"{backend}/api/auth/steam/callback"
+    callback_query = {}
     if link_token:
-        callback_url = f"{callback_url}?{urlencode({'link_token': link_token})}"
+        callback_query["link_token"] = link_token
+    if frontend_origin:
+        callback_query["frontend_origin"] = frontend_origin
+    if callback_query:
+        callback_url = f"{callback_url}?{urlencode(callback_query)}"
     params = {
         "openid.ns": "http://specs.openid.net/auth/2.0",
         "openid.mode": "checkid_setup",
@@ -3031,14 +3067,16 @@ def _steam_openid_redirect_url(backend: str, link_token: Optional[str] = None) -
 @api_router.get("/auth/steam/login")
 async def steam_login_real(request: Request):
     backend = _backend_base(request)
-    return RedirectResponse(url=_steam_openid_redirect_url(backend), status_code=302)
+    frontend_origin = _frontend_origin_from_request(request)
+    return RedirectResponse(url=_steam_openid_redirect_url(backend, frontend_origin=frontend_origin), status_code=302)
 
 
 @api_router.post("/auth/steam/link-session")
 async def create_steam_link_session(request: Request, user=Depends(get_current_user)):
     backend = _backend_base(request)
     link_token = make_steam_link_token(user["id"])
-    return {"url": _steam_openid_redirect_url(backend, link_token)}
+    frontend_origin = _frontend_origin_from_request(request)
+    return {"url": _steam_openid_redirect_url(backend, link_token, frontend_origin)}
 
 
 @api_router.get("/auth/steam/merge-preview")
@@ -3091,30 +3129,30 @@ async def confirm_steam_merge(req: SteamMergeConfirmReq, user=Depends(get_curren
 async def steam_callback(request: Request):
     qp = dict(request.query_params)
     if qp.get("openid.mode") != "id_res":
-        return RedirectResponse(url=f"{_frontend_base()}/login?steam_error=cancelled", status_code=302)
+        return RedirectResponse(url=f"{_frontend_base(request)}/login?steam_error=cancelled", status_code=302)
     # Step 1: validate by sending back to Steam with mode=check_authentication
     verify = {**qp, "openid.mode": "check_authentication"}
     async with httpx.AsyncClient(timeout=10) as cx:
         r = await cx.post(STEAM_OPENID_URL, data=verify)
     if "is_valid:true" not in r.text:
         await journal("steam_verify_failed", None, {"raw": r.text[:200]})
-        return RedirectResponse(url=f"{_frontend_base()}/login?steam_error=invalid", status_code=302)
+        return RedirectResponse(url=f"{_frontend_base(request)}/login?steam_error=invalid", status_code=302)
     # Step 2: extract SteamID64 from claimed_id
     claimed = qp.get("openid.claimed_id", "")
     steam_id = claimed.rsplit("/", 1)[-1] if claimed else None
     if not steam_id or not steam_id.isdigit():
-        return RedirectResponse(url=f"{_frontend_base()}/login?steam_error=no_id", status_code=302)
+        return RedirectResponse(url=f"{_frontend_base(request)}/login?steam_error=no_id", status_code=302)
     try:
         user = await _resolve_steam_user(steam_id, request, qp.get("link_token"))
     except SteamMergeRequired as exc:
-        return RedirectResponse(url=f"{_frontend_base()}/profile?steam_merge_token={exc.merge_token}", status_code=302)
+        return RedirectResponse(url=f"{_frontend_base(request)}/profile?steam_merge_token={exc.merge_token}", status_code=302)
     except HTTPException as exc:
         error_target = "profile" if qp.get("link_token") else "login"
-        return RedirectResponse(url=f"{_frontend_base()}/{error_target}?steam_error={exc.detail}", status_code=302)
+        return RedirectResponse(url=f"{_frontend_base(request)}/{error_target}?steam_error={exc.detail}", status_code=302)
     user = await _bootstrap_steam_profile(user)
     await journal("steam_login", user["id"], {"steam_id": steam_id})
     token = make_token(user["id"], user["pseudo"])
-    return RedirectResponse(url=f"{_frontend_base()}/auth/steam/complete?token={token}&steamId={steam_id}", status_code=302)
+    return RedirectResponse(url=f"{_frontend_base(request)}/auth/steam/complete?token={token}&steamId={steam_id}", status_code=302)
 
 # ============ STRIPE — real Checkout via emergentintegrations =============
 STRIPE_API_KEY = env_text("STRIPE_API_KEY")

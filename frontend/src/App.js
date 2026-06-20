@@ -1964,7 +1964,7 @@ const Profile = () => {
   }, [mergeToken, token]);
   const handleSteamLink = async () => {
     if (!token) {
-      window.location.href = `${API}/auth/steam/login`;
+      window.location.href = `${API}/auth/steam/login?frontend_origin=${encodeURIComponent(window.location.origin)}`;
       return;
     }
     try {
@@ -5384,7 +5384,7 @@ const Login = () => {
     }
     setErr("Connexion Steam impossible pour le moment.");
   }, [location.search]);
-  const handleSteam = () => { window.location.href = `${API}/auth/steam/login`; };
+  const handleSteam = () => { window.location.href = `${API}/auth/steam/login?frontend_origin=${encodeURIComponent(window.location.origin)}`; };
   const submit = async (e) => {
     e.preventDefault(); setErr(""); setMsg(""); setBusy(true);
     try {
