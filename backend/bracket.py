@@ -7,7 +7,7 @@ Pure-logic helpers (no DB) plus a small router factory. Entrants are dicts
 import math
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Awaitable, Callable, List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
@@ -316,10 +316,21 @@ async def apply_manual_bracket_result(
     return bracket
 
 
-def build_bracket_router(db, get_admin_user, journal):
+def build_bracket_router(
+    db,
+    get_admin_user,
+    journal,
+    entrants_loader: Optional[Callable[[str], Awaitable[List[dict[str, Any]]]]] = None,
+    on_result_applied: Optional[Callable[[str, str, dict], Awaitable[Optional[dict]]]] = None,
+):
     router = APIRouter(prefix="/api/tournaments")
 
     async def _entrants(tid: str) -> List[dict]:
+        if entrants_loader:
+            entrants = await entrants_loader(tid)
+            if len(entrants) < 2:
+                raise HTTPException(409, "Au moins 2 equipes confirmees sont requises pour generer le bracket")
+            return entrants
         regs = await db.tournament_registrations.find(
             {"tournament_id": tid, "entity_type": "team"}, {"_id": 0}).sort("created_at", 1).to_list(200)
         entrants = [{"id": r.get("entity_id") or r["id"], "name": r["entity_name"]} for r in regs]
@@ -358,7 +369,7 @@ def build_bracket_router(db, get_admin_user, journal):
 
     @router.post("/{tid}/bracket/match/{match_id}/result")
     async def set_result(tid: str, match_id: str, req: ResultReq, admin=Depends(get_admin_user)):
-        return await apply_manual_bracket_result(
+        bracket = await apply_manual_bracket_result(
             db,
             journal,
             tid,
@@ -367,5 +378,10 @@ def build_bracket_router(db, get_admin_user, journal):
             expected_version=req.expected_version,
             actor_user_id=admin["id"],
         )
+        if on_result_applied:
+            refreshed = await on_result_applied(tid, match_id, bracket)
+            if refreshed is not None:
+                return refreshed
+        return bracket
 
     return router

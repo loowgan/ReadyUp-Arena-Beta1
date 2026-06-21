@@ -679,6 +679,366 @@ async def configure_matchzy_remote_log(
     return outputs
 
 
+def _match_launch_group_order(match_doc: dict[str, Any]) -> tuple[int, int, int]:
+    group_order = {"W": 0, "L": 1, "GF": 2}
+    return (
+        group_order.get(str(match_doc.get("group") or "").strip().upper(), 9),
+        int(match_doc.get("round", 0) or 0),
+        int(match_doc.get("index", 0) or 0),
+    )
+
+
+def _match_is_launchable(match_doc: dict[str, Any]) -> bool:
+    launch_status = str(match_doc.get("launch_status") or "").strip().lower()
+    if match_doc.get("winner_id"):
+        return False
+    if not match_doc.get("a") or not match_doc.get("b"):
+        return False
+    return launch_status not in {"launch_pending", "live", "finished"}
+
+
+def _server_ready_for_match_launch(server_doc: dict[str, Any]) -> bool:
+    status = str(server_doc.get("status") or "").strip().lower()
+    return bool(
+        server_doc.get("matchzy_enabled")
+        and not server_doc.get("current_match_id")
+        and status not in {"live", "launch_pending", "allocating"}
+    )
+
+
+def _select_matchzy_roster_candidates(docs: list[dict[str, Any]]) -> list[tuple[int, str, str, str]]:
+    candidates: list[tuple[int, str, str, str]] = []
+    seen: set[str] = set()
+    for doc in docs:
+        steam_id = str(doc.get("steam_id") or "").strip()
+        if not steam_id or not steam_id.isdigit() or steam_id in seen:
+            continue
+        seen.add(steam_id)
+        pseudo = str(doc.get("pseudo") or steam_id).strip() or steam_id
+        team_role = str(doc.get("team_role") or doc.get("role") or "").strip().lower()
+        priority = 0 if team_role == "captain" else 1
+        candidates.append((priority, pseudo.lower(), steam_id, pseudo))
+    candidates.sort()
+    return candidates
+
+
+def _build_matchzy_team_from_candidate_docs(
+    *,
+    team_name: str,
+    docs: list[dict[str, Any]],
+    players_per_team: int,
+    allow_incomplete_roster: bool,
+    missing_label: str,
+) -> dict[str, Any]:
+    candidates = _select_matchzy_roster_candidates(docs)
+    selected = candidates[:players_per_team]
+    if not selected:
+        raise HTTPException(409, f"Aucun Steam ID exploitable trouve pour {missing_label}")
+    if not allow_incomplete_roster and len(selected) < players_per_team:
+        raise HTTPException(
+            409,
+            f"Roster incomplet pour {missing_label}: {len(selected)}/{players_per_team} joueurs avec Steam ID",
+        )
+    return {
+        "name": team_name,
+        "players": {steam_id: pseudo for _, _, steam_id, pseudo in selected},
+    }
+
+
+async def _load_matchzy_team_payload_for_entrant(
+    db,
+    entrant: dict[str, Any],
+    fallback_name: str,
+    players_per_team: int,
+    allow_incomplete_roster: bool,
+) -> dict[str, Any]:
+    entrant_name = str(entrant.get("name") or fallback_name).strip() or fallback_name
+    entrant_members = list(entrant.get("members") or entrant.get("roster_players") or [])
+    if entrant_members:
+        return _build_matchzy_team_from_candidate_docs(
+            team_name=entrant_name,
+            docs=entrant_members,
+            players_per_team=players_per_team,
+            allow_incomplete_roster=allow_incomplete_roster,
+            missing_label=entrant_name,
+        )
+
+    team_id = str(entrant.get("id") or "").strip()
+    team_doc = await db.teams.find_one({"id": team_id}, {"_id": 0, "id": 1, "name": 1}) if team_id else None
+    if not team_doc:
+        raise HTTPException(404, f"Equipe introuvable pour le match ({entrant_name})")
+
+    user_docs = await db.users.find(
+        {"team_id": team_id},
+        {"_id": 0, "pseudo": 1, "steam_id": 1, "team_role": 1, "role": 1},
+    ).to_list(30)
+    seed_docs = await db.players.find(
+        {"team_id": team_id},
+        {"_id": 0, "pseudo": 1, "steam_id": 1, "team_role": 1, "role": 1},
+    ).to_list(30)
+
+    return _build_matchzy_team_from_candidate_docs(
+        team_name=team_doc.get("name") or entrant_name,
+        docs=[*user_docs, *seed_docs],
+        players_per_team=players_per_team,
+        allow_incomplete_roster=allow_incomplete_roster,
+        missing_label=team_doc.get("name") or entrant_name,
+    )
+
+
+async def _store_matchzy_config_doc(
+    db,
+    tournament_id: str,
+    match_id: str,
+    server_id: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    now_iso = _now_iso()
+    doc = {
+        "id": f"{tournament_id}:{match_id}",
+        "tournament_id": tournament_id,
+        "match_id": match_id,
+        "server_id": server_id,
+        "config": config,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    await db.matchzy_match_configs.replace_one(
+        {"tournament_id": tournament_id, "match_id": match_id},
+        doc,
+        upsert=True,
+    )
+    return doc
+
+
+async def launch_bracket_match_on_server(
+    db,
+    journal,
+    tournament_id: str,
+    match_id: str,
+    server_id: str,
+    *,
+    created_by: Optional[str] = None,
+    num_maps: int = 1,
+    maplist: Optional[list[str]] = None,
+    map_sides: Optional[list[str]] = None,
+    players_per_team: int = 5,
+    clinch_series: bool = True,
+    allow_incomplete_roster: bool = False,
+    cvars: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    srv = await db.cs2_servers.find_one({"id": server_id}, {"_id": 0})
+    if not srv:
+        raise HTTPException(404, "Serveur CS2 introuvable")
+    if srv.get("status") == "live" and srv.get("current_match_id") and str(srv.get("current_match_id")) != str(match_id):
+        raise HTTPException(409, f"Le serveur {srv.get('name')} heberge deja le match {srv.get('current_match_id')}")
+
+    public_base = _backend_public_base()
+    if not public_base:
+        raise HTTPException(500, "BACKEND_PUBLIC_URL manquant pour generer l'URL MatchZy")
+
+    tournament = await db.tournaments.find_one({"id": tournament_id}, {"_id": 0})
+    if not tournament:
+        raise HTTPException(404, "Tournoi introuvable")
+    bracket_doc = await db.brackets.find_one({"tournament_id": tournament_id}, {"_id": 0})
+    if not bracket_doc:
+        raise HTTPException(404, "Bracket introuvable")
+    match_doc = _find_bracket_match_doc(bracket_doc, match_id)
+    if not match_doc:
+        raise HTTPException(404, "Match de bracket introuvable")
+    if match_doc.get("winner_id"):
+        raise HTTPException(409, "Ce match est deja termine")
+    if not match_doc.get("a") or not match_doc.get("b"):
+        raise HTTPException(409, "Les deux equipes ne sont pas encore connues pour ce match")
+
+    team1 = await _load_matchzy_team_payload_for_entrant(
+        db,
+        dict(match_doc["a"]),
+        str(match_doc.get("a_name") or "Equipe 1"),
+        players_per_team,
+        allow_incomplete_roster,
+    )
+    team2 = await _load_matchzy_team_payload_for_entrant(
+        db,
+        dict(match_doc["b"]),
+        str(match_doc.get("b_name") or "Equipe 2"),
+        players_per_team,
+        allow_incomplete_roster,
+    )
+
+    selected_maps = [str(item).strip() for item in (maplist or tournament.get("maps") or []) if str(item).strip()]
+    if not selected_maps:
+        selected_maps = ["de_dust2"]
+    if len(selected_maps) < num_maps:
+        raise HTTPException(400, f"Maplist insuffisante pour un BO{num_maps} ({len(selected_maps)} map(s) disponible(s))")
+    selected_maps = selected_maps[:num_maps]
+
+    selected_sides = [str(item).strip() for item in (map_sides or []) if str(item).strip()]
+    if not selected_sides:
+        selected_sides = ["knife"] * num_maps
+    while len(selected_sides) < num_maps:
+        selected_sides.append(selected_sides[-1] if selected_sides else "knife")
+    selected_sides = selected_sides[:num_maps]
+
+    config = {
+        "matchid": str(match_id),
+        "team1": team1,
+        "team2": team2,
+        "num_maps": num_maps,
+        "maplist": selected_maps,
+        "map_sides": selected_sides,
+        "clinch_series": clinch_series,
+        "players_per_team": players_per_team,
+        "cvars": {
+            "hostname": f"ReadyUp Arena | {tournament.get('name', 'Tournament')} | {team1['name']} vs {team2['name']}",
+            **(cvars or {}),
+        },
+    }
+    stored = await _store_matchzy_config_doc(db, tournament_id, str(match_id), server_id, config)
+
+    config_url = f"{public_base}/api/cs2/tournaments/{tournament_id}/bracket-matches/{match_id}/matchzy-config"
+    header_name, header_value = _matchzy_config_header()
+    remote_log_outputs = await configure_matchzy_remote_log(
+        db,
+        srv,
+        created_by=created_by,
+        metadata={"tournament_id": tournament_id, "match_id": match_id, "config_url": config_url},
+    )
+    command = _matchzy_load_url_command(config_url, header_name, header_value)
+    result = await run_server_command(
+        db,
+        srv,
+        command,
+        kind="launch_bracket_match",
+        metadata={"tournament_id": tournament_id, "match_id": match_id, "config_url": config_url},
+        created_by=created_by,
+    )
+
+    now_iso = _now_iso()
+    await db.cs2_servers.update_one(
+        {"id": server_id},
+        {"$set": {
+            "current_match_id": str(match_id),
+            "current_tournament_id": str(tournament_id),
+            "current_bracket_match_id": str(match_id),
+            "last_match_id": str(match_id),
+            "status": "launch_pending" if result["queued"] else "live",
+            "last_checked_at": now_iso,
+        }},
+    )
+    await _attach_match_runtime_metadata(
+        db,
+        str(match_id),
+        {
+            "server_id": server_id,
+            "server_name": srv.get("name"),
+            "server_host": srv.get("public_host") or srv.get("host"),
+            "server_game_port": srv.get("game_port") or srv.get("port"),
+            "matchzy_config_url": config_url,
+            "launch_status": "launch_pending" if result["queued"] else "live",
+            "launch_error": None,
+            "launched_at": now_iso,
+            "updated_at": now_iso,
+            "num_maps": num_maps,
+            "players_per_team": players_per_team,
+        },
+    )
+    if journal:
+        await journal(
+            "cs2_bracket_match_launched",
+            created_by,
+            {"tournament_id": tournament_id, "match_id": str(match_id), "server_id": server_id, "server_name": srv.get("name")},
+        )
+    return {
+        "ok": True,
+        "tournament_id": tournament_id,
+        "match_id": str(match_id),
+        "server_id": server_id,
+        "server_name": srv.get("name"),
+        "config_url": config_url,
+        "match_url": f"/match/{match_id}",
+        "config_preview": stored["config"],
+        "mode": result["mode"],
+        "queued": result["queued"],
+        "command_id": result.get("command_id"),
+        "output": result["output"],
+        "remote_log_configured": bool(remote_log_outputs),
+        "remote_log_outputs": remote_log_outputs,
+        "tournament_name": tournament.get("name"),
+    }
+
+
+async def auto_launch_ready_bracket_matches(
+    db,
+    journal,
+    tournament_id: str,
+    *,
+    created_by: Optional[str] = None,
+    max_matches: Optional[int] = None,
+    num_maps: int = 1,
+    maplist: Optional[list[str]] = None,
+    map_sides: Optional[list[str]] = None,
+    players_per_team: int = 5,
+    clinch_series: bool = True,
+    allow_incomplete_roster: bool = False,
+    cvars: Optional[dict[str, str]] = None,
+) -> list[dict[str, Any]]:
+    bracket_doc = await db.brackets.find_one({"tournament_id": tournament_id}, {"_id": 0})
+    if not bracket_doc:
+        return []
+
+    ready_matches = sorted(
+        [match_doc for match_doc in _iter_bracket_matches_doc(bracket_doc) if _match_is_launchable(match_doc)],
+        key=_match_launch_group_order,
+    )
+    if not ready_matches:
+        return []
+
+    launched: list[dict[str, Any]] = []
+    for match_doc in ready_matches:
+        if max_matches is not None and len(launched) >= max_matches:
+            break
+        servers = await db.cs2_servers.find({}, {"_id": 0}).sort("created_at", 1).to_list(200)
+        available_servers = [server for server in servers if _server_ready_for_match_launch(server)]
+        if not available_servers:
+            break
+
+        preferred_server = next(
+            (server for server in available_servers if str(server.get("id")) == str(match_doc.get("server_id") or "")),
+            None,
+        )
+        server = preferred_server or available_servers[0]
+        try:
+            launched.append(
+                await launch_bracket_match_on_server(
+                    db,
+                    journal,
+                    tournament_id,
+                    str(match_doc["id"]),
+                    str(server["id"]),
+                    created_by=created_by,
+                    num_maps=num_maps,
+                    maplist=maplist,
+                    map_sides=map_sides,
+                    players_per_team=players_per_team,
+                    clinch_series=clinch_series,
+                    allow_incomplete_roster=allow_incomplete_roster,
+                    cvars=cvars,
+                )
+            )
+        except HTTPException as exc:
+            await _attach_match_runtime_metadata(
+                db,
+                str(match_doc["id"]),
+                {
+                    "launch_status": "failed",
+                    "launch_error": str(exc.detail),
+                    "updated_at": _now_iso(),
+                },
+            )
+    return launched
+
+
 def build_cs2_router(db, get_current_user, get_admin_user, journal):
     router = APIRouter(prefix="/api/cs2")
 
@@ -1176,79 +1536,21 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
         req: LaunchBracketMatchReq,
         user=Depends(get_admin_user),
     ):
-        srv = await _get_server(req.server_id)
-        if srv.get("status") == "live" and srv.get("current_match_id") and str(srv.get("current_match_id")) != str(match_id):
-            raise HTTPException(409, f"Le serveur {srv.get('name')} heberge deja le match {srv.get('current_match_id')}")
-
-        public_base = _backend_public_base()
-        if not public_base:
-            raise HTTPException(500, "BACKEND_PUBLIC_URL manquant pour generer l'URL MatchZy")
-
-        tournament, _bracket_doc, stored = await _build_matchzy_config(tid, match_id, req.server_id, req)
-        config_url = f"{public_base}/api/cs2/tournaments/{tid}/bracket-matches/{match_id}/matchzy-config"
-        header_name, header_value = _matchzy_config_header()
-        remote_log_outputs = await _configure_matchzy_remote_log(
-            srv,
-            created_by=user["id"],
-            metadata={"tournament_id": tid, "match_id": match_id, "config_url": config_url},
-        )
-        command = _matchzy_load_url_command(config_url, header_name, header_value)
-        result = await _run_server_command(
-            srv,
-            command,
-            kind="launch_bracket_match",
-            metadata={"tournament_id": tid, "match_id": match_id, "config_url": config_url},
-            created_by=user["id"],
-        )
-
-        await db.cs2_servers.update_one(
-            {"id": req.server_id},
-            {"$set": {
-                "current_match_id": str(match_id),
-                "current_tournament_id": str(tid),
-                "current_bracket_match_id": str(match_id),
-                "last_match_id": str(match_id),
-                "status": "launch_pending" if result["queued"] else "live",
-                "last_checked_at": _now_iso(),
-            }},
-        )
-        await _attach_bracket_match_metadata(
+        return await launch_bracket_match_on_server(
+            db,
+            journal,
             tid,
             match_id,
-            {
-                "server_id": req.server_id,
-                "server_name": srv.get("name"),
-                "server_host": srv.get("public_host") or srv.get("host"),
-                "server_game_port": srv.get("game_port") or srv.get("port"),
-                "matchzy_config_url": config_url,
-                "launch_status": "launch_pending" if result["queued"] else "live",
-                "launched_at": _now_iso(),
-                "num_maps": req.num_maps,
-                "players_per_team": req.players_per_team,
-            },
+            req.server_id,
+            created_by=user["id"],
+            num_maps=req.num_maps,
+            maplist=req.maplist,
+            map_sides=req.map_sides,
+            players_per_team=req.players_per_team,
+            clinch_series=req.clinch_series,
+            allow_incomplete_roster=req.allow_incomplete_roster,
+            cvars=req.cvars,
         )
-        await journal(
-            "cs2_bracket_match_launched",
-            user["id"],
-            {"tournament_id": tid, "match_id": match_id, "server_id": req.server_id, "server_name": srv.get("name")},
-        )
-        return {
-            "ok": True,
-            "tournament_id": tid,
-            "match_id": match_id,
-            "server_id": req.server_id,
-            "server_name": srv.get("name"),
-            "config_url": config_url,
-            "match_url": f"/match/{match_id}",
-            "config_preview": stored["config"],
-            "mode": result["mode"],
-            "queued": result["queued"],
-            "command_id": result.get("command_id"),
-            "output": result["output"],
-            "remote_log_configured": bool(remote_log_outputs),
-            "remote_log_outputs": remote_log_outputs,
-            "tournament_name": tournament.get("name"),
-        }
 
     @router.post("/bridge/heartbeat")
     async def bridge_heartbeat(req: BridgeHeartbeatReq, authorization: Optional[str] = Header(default=None)):
@@ -1380,12 +1682,22 @@ def build_cs2_router(db, get_current_user, get_admin_user, journal):
             "received_at": _now_iso(),
         }
         await db.matchzy_events.insert_one(event)
+        auto_launched_matches: list[str] = []
         if payload.get("matchid") is not None:
             await _apply_matchzy_runtime_state(db, str(payload.get("matchid")), payload)
         if payload.get("event") == "series_end" and payload.get("matchid"):
-            await _try_apply_matchzy_result(str(payload.get("matchid")), payload)
+            bracket_resolved = await _try_apply_matchzy_result(str(payload.get("matchid")), payload)
+            if bracket_resolved:
+                bracket_doc = await _find_bracket_doc_by_match_id(db, str(payload.get("matchid")))
+                if bracket_doc and bracket_doc.get("tournament_id"):
+                    launched = await auto_launch_ready_bracket_matches(
+                        db,
+                        journal,
+                        str(bracket_doc["tournament_id"]),
+                    )
+                    auto_launched_matches = [str(item.get("match_id")) for item in launched if item.get("match_id")]
             await _try_apply_duel_matchzy_result(str(payload.get("matchid")), payload)
-        return {"received": True, "id": event["id"]}
+        return {"received": True, "id": event["id"], "auto_launched_matches": auto_launched_matches}
 
     @router.get("/events")
     async def list_events(limit: int = 50, matchid: Optional[str] = None):

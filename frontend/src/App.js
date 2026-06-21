@@ -377,6 +377,12 @@ const MATCH_REPORT_SOURCE_LABELS = {
   cs2_chat: "CS2",
 };
 
+const REWARD_REDEMPTION_STATUS_LABELS = {
+  pending: "En attente",
+  delivered: "Livree",
+  cancelled: "Annulee",
+};
+
 const MATCH_EVENT_LABELS = {
   series_start: "Debut de serie",
   series_end: "Fin de serie",
@@ -440,7 +446,7 @@ const computeTeamMemberMvpScore = (member) => {
 const resolveTeamMvp = (members = []) =>
   [...members].sort((left, right) => computeTeamMemberMvpScore(right) - computeTeamMemberMvpScore(left))[0] || null;
 
-const TeamMemberPremiumCard = ({ member, teamColor, isMvp = false, compact = false, rank = null }) => (
+const TeamMemberPremiumCard = ({ member, teamColor, isMvp = false, compact = false, rank = null, actions = null }) => (
   <div
     className={`relative overflow-hidden border ${isMvp ? "shadow-[0_0_40px_rgba(255,184,0,0.18)]" : "shadow-[0_0_24px_rgba(0,0,0,0.18)]"}`}
     style={{
@@ -507,6 +513,7 @@ const TeamMemberPremiumCard = ({ member, teamColor, isMvp = false, compact = fal
         <div className="text-xs text-white/55">Rang <span className="text-white">{member.rank_cs2 || "—"}</span></div>
         <div className="text-xs text-white/55">Statut <span className={`${member.online ? "text-green-400" : "text-white/50"}`}>{member.online ? "online" : "offline"}</span></div>
       </div>
+      {actions && <div className="mt-4 flex flex-wrap gap-2">{actions}</div>}
     </div>
   </div>
 );
@@ -1030,7 +1037,7 @@ const BracketSection = ({ tid }) => {
                       </div>
                     );
                   })}
-                  {(m.server_name || (isAdmin && m.a && m.b)) && (
+                  {(m.server_name || m.launch_status || (isAdmin && m.a && m.b)) && (
                     <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
                       {m.server_name && (
                         <div className="text-[11px] text-white/50 uppercase tracking-widest">
@@ -1043,6 +1050,7 @@ const BracketSection = ({ tid }) => {
                           Serie: {m.series_score.team1 ?? 0} - {m.series_score.team2 ?? 0}
                         </div>
                       )}
+                      {m.launch_error && <div className="text-xs text-red-300">{m.launch_error}</div>}
                       {isAdmin && m.a && m.b && !m.winner_id && (
                         <>
                           <select
@@ -1067,10 +1075,10 @@ const BracketSection = ({ tid }) => {
                             >
                               <Server size={12}/>{launchingMatchId === m.id ? "Lancement..." : "Lancer sur serveur"}
                             </button>
-                            {m.launch_status && <Link to={`/match/${m.id}`} className="btn-ghost text-xs"><Radio size={12}/>Suivi match</Link>}
                           </div>
                         </>
                       )}
+                      {(m.server_name || m.launch_status) && <Link to={`/match/${m.id}`} className="btn-ghost text-xs inline-flex"><Radio size={12}/>Suivi match</Link>}
                     </div>
                   )}
                 </div>
@@ -1105,6 +1113,7 @@ const BracketSection = ({ tid }) => {
 const WaitingRoom = () => {
   const { id } = useParams();
   const { token, user } = useAuth();
+  const isAdmin = user?.is_admin;
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [seconds, setSeconds] = useState(null);
@@ -1130,6 +1139,7 @@ const WaitingRoom = () => {
       if (m.type === "countdown") { setSeconds(m.seconds); setPhase(m.phase); if (m.seconds <= 10) navigate(`/countdown/${id}`); }
       if (m.type === "presence") setPresence(m.users || []);
       if (m.type === "event") setLiveEvents(prev => [{ time: m.time, msg: m.msg }, ...prev].slice(0, 30));
+      if (m.type === "error") setLiveEvents(prev => [{ time: "SYSTEM", msg: m.msg }, ...prev].slice(0, 30));
       if (m.type === "go") navigate(`/draw/${id}`);
       if (m.type === "chat") setChat(prev => [...prev, m].slice(-50));
     };
@@ -1158,7 +1168,7 @@ const WaitingRoom = () => {
         <p className={`mt-2 uppercase tracking-[0.3em] text-sm ${phaseColor}`}>{phaseLabel}</p>
         <div className="mt-6 flex gap-2 justify-center flex-wrap">
           {user && <button onClick={markReady} className="btn-ghost" data-testid="btn-ready"><CheckCircle2 size={14}/>Je suis prêt</button>}
-          <button onClick={startCountdown} className="btn-neon" data-testid="start-countdown-btn"><Zap size={14}/>Lancer le décompte serveur</button>
+          {isAdmin && <button onClick={startCountdown} className="btn-neon" data-testid="start-countdown-btn"><Zap size={14}/>Lancer le décompte serveur</button>}
         </div>
       </div>
       <div className="grid md:grid-cols-4 gap-4 mt-6">
@@ -1235,22 +1245,40 @@ const WaitingRoom = () => {
 const Countdown = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [n, setN] = useState(10);
+  const [n, setN] = useState(null);
   useEffect(() => {
+    let active = true;
+    axios
+      .get(`${API}/tournaments/${id}/waiting-room`)
+      .then((response) => {
+        if (!active) return;
+        const seconds = Number(response.data?.starts_in_seconds ?? 10);
+        setN(Math.max(0, Math.min(seconds, 10)));
+      })
+      .catch(() => {
+        if (active) setN(10);
+      });
+    return () => {
+      active = false;
+    };
+  }, [id]);
+  useEffect(() => {
+    if (n === null) return undefined;
     if (n < 0) { navigate(`/draw/${id}`); return; }
-    const t = setTimeout(() => setN(n - 1), 1000);
+    const t = setTimeout(() => setN((prev) => (prev === null ? prev : prev - 1)), 1000);
     return () => clearTimeout(t);
   }, [n, id, navigate]);
-  const intensity = n >= 7 ? 1 : n >= 4 ? 1.4 : n >= 2 ? 1.8 : 2.2;
+  const safeN = n ?? 10;
+  const intensity = safeN >= 7 ? 1 : safeN >= 4 ? 1.4 : safeN >= 2 ? 1.8 : 2.2;
   return (
     <div className="fixed inset-0 bg-black flex items-center justify-center overflow-hidden" data-testid="countdown-screen">
       <Particles/>
       <div className="absolute inset-0 bg-arena bg-grid scanlines opacity-60"/>
       <button onClick={() => navigate(`/draw/${id}`)} className="absolute top-6 right-6 btn-ghost z-10" data-testid="skip-countdown-btn">Passer →</button>
       <AnimatePresence mode="wait">
-        <motion.div key={n} initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: intensity, opacity: 1 }} exit={{ scale: 3, opacity: 0 }}
-          transition={{ duration: 0.6 }} className="countdown-digit relative z-10" data-testid={`countdown-${n}`}>
-          {n === 0 ? "GO" : n}
+        <motion.div key={safeN} initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: intensity, opacity: 1 }} exit={{ scale: 3, opacity: 0 }}
+          transition={{ duration: 0.6 }} className="countdown-digit relative z-10" data-testid={`countdown-${safeN}`}>
+          {n === null ? "…" : safeN === 0 ? "GO" : safeN}
         </motion.div>
       </AnimatePresence>
       <div className="absolute bottom-10 text-center w-full">
@@ -1263,35 +1291,122 @@ const Countdown = () => {
 /* ============== BRACKET DRAW ============== */
 const BracketDraw = () => {
   const { id } = useParams();
+  const { user } = useAuth();
   const navigate = useNavigate();
-  const [teams, setTeams] = useState([]);
+  const [tournament, setTournament] = useState(null);
+  const [bracket, setBracket] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [step, setStep] = useState(0);
-  useEffect(() => { axios.get(`${API}/teams`).then(r => setTeams(r.data)); }, []);
+
   useEffect(() => {
-    if (step < 8) { const t = setTimeout(() => setStep(step + 1), 700); return () => clearTimeout(t); }
-  }, [step]);
-  const matchups = [[teams[0], teams[7]], [teams[3], teams[4]], [teams[1], teams[6]], [teams[2], teams[5]]];
+    let active = true;
+    const load = async (withSpinner = false) => {
+      if (withSpinner) setLoading(true);
+      try {
+        const [tournamentResponse, bracketResponse] = await Promise.all([
+          axios.get(`${API}/tournaments/${id}`),
+          axios.get(`${API}/tournaments/${id}/bracket`).catch(() => ({ data: null })),
+        ]);
+        if (!active) return;
+        setTournament(tournamentResponse.data);
+        setBracket(bracketResponse.data);
+      } catch {
+        if (!active) return;
+        setTournament(null);
+        setBracket(null);
+      } finally {
+        if (active && withSpinner) setLoading(false);
+      }
+    };
+    load(true);
+    const interval = setInterval(() => load(false), 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [id]);
+
+  useEffect(() => {
+    if (!bracket) return undefined;
+    const matchesCount = ["W", "L", "GF"].reduce((count, group) => count + ((bracket.matches?.[group] || []).filter((match) => match.a && match.b).length), 0);
+    const maxSteps = Math.min(Math.max(matchesCount * 2, 1), 8);
+    if (step < maxSteps) {
+      const timeout = setTimeout(() => setStep(step + 1), 650);
+      return () => clearTimeout(timeout);
+    }
+    return undefined;
+  }, [bracket, step]);
+
+  const allMatches = ["W", "L", "GF"]
+    .flatMap((group) => (bracket?.matches?.[group] || []).map((match) => ({ ...match, group })))
+    .filter((match) => match.a && match.b)
+    .sort((left, right) => {
+      const groupOrder = { W: 0, L: 1, GF: 2 };
+      return (
+        (groupOrder[left.group] ?? 9) - (groupOrder[right.group] ?? 9)
+        || (left.round ?? 0) - (right.round ?? 0)
+        || (left.index ?? 0) - (right.index ?? 0)
+      );
+    });
+  const featuredMatches = allMatches.slice(0, 4);
+  const teamContainsUser = (team) => {
+    if (!team || !user) return false;
+    if (user.team_id && String(team.id) === String(user.team_id)) return true;
+    return (team.members || []).some((member) => (
+      String(member.user_id || member.id || "") === String(user.id || "")
+      || (user.steam_id && String(member.steam_id || "") === String(user.steam_id))
+    ));
+  };
+  const myMatch = allMatches.find((match) => teamContainsUser(match.a) || teamContainsUser(match.b));
+  const liveMatch = allMatches.find((match) => ["launch_pending", "live", "finished"].includes(String(match.launch_status || "").toLowerCase()));
+  const primaryTarget = myMatch || liveMatch || featuredMatches[0] || null;
+
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto px-6 py-10" data-testid="bracket-draw-loading">
+        <div className="glass p-8 text-white/50">Preparation du bracket et des rooms CS2…</div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="bracket-draw">
       <div className="text-center">
-        <Badge variant="live">TIRAGE EN COURS</Badge>
+        <Badge variant={liveMatch ? "live" : "soon"}>{liveMatch ? "TABLEAU ACTIF" : "TIRAGE VALIDÉ"}</Badge>
         <h1 className="font-display text-5xl uppercase mt-3">Révélation du tableau</h1>
+        <p className="text-white/55 mt-3">
+          {tournament?.name || `Tournoi ${id}`} • les rooms MatchZy se lancent automatiquement dès qu’un serveur libre est disponible.
+        </p>
       </div>
       <div className="grid md:grid-cols-2 gap-6 mt-10">
-        {matchups.map((m, i) => (
+        {featuredMatches.length === 0 && (
+          <div className="glass p-6 text-white/45 md:col-span-2">
+            Le bracket est en cours de préparation. Recharge automatique active.
+          </div>
+        )}
+        {featuredMatches.map((m, i) => (
           <motion.div key={i} initial={{ opacity: 0, x: i%2 ? 50 : -50 }} animate={{ opacity: step > i*2+1 ? 1 : 0, x: 0 }} transition={{ duration: 0.5 }}
             className="glass p-6 relative overflow-hidden" data-testid={`matchup-${i}`}>
             <div className="absolute inset-0 bg-gradient-to-r from-orange-500/10 to-red-500/10"/>
             <div className="relative flex items-center justify-between">
-              <div className="flex items-center gap-3"><TeamLogo team={m[0] || teams[0]}/><div><div className="font-display">{m[0]?.name}</div><div className="text-xs text-white/40">ELO {m[0]?.elo}</div></div></div>
+              <div className="flex items-center gap-3"><TeamLogo team={m.a}/><div><div className="font-display">{m.a_name || m.a?.name}</div><div className="text-xs text-white/40">ELO {m.a?.elo ?? "—"}</div></div></div>
               <span className="font-display text-3xl text-orange-500">VS</span>
-              <div className="flex items-center gap-3 flex-row-reverse"><TeamLogo team={m[1] || teams[1]}/><div className="text-right"><div className="font-display">{m[1]?.name}</div><div className="text-xs text-white/40">ELO {m[1]?.elo}</div></div></div>
+              <div className="flex items-center gap-3 flex-row-reverse"><TeamLogo team={m.b}/><div className="text-right"><div className="font-display">{m.b_name || m.b?.name}</div><div className="text-xs text-white/40">ELO {m.b?.elo ?? "—"}</div></div></div>
+            </div>
+            <div className="relative mt-4 flex items-center justify-between text-xs uppercase tracking-widest text-white/45">
+              <span>{m.group === "GF" ? "Grande finale" : `Tour ${Number(m.round ?? 0) + 1}`}</span>
+              <span>{m.launch_status || "En attente serveur"}</span>
             </div>
           </motion.div>))}
       </div>
       <div className="text-center mt-10">
-        <button onClick={() => navigate(`/match/m1`)} className="btn-neon" data-testid="open-match-btn"><Swords size={14}/>Ouvrir mon match</button>
+        {primaryTarget ? (
+          <button onClick={() => navigate(`/match/${primaryTarget.id}`)} className="btn-neon" data-testid="open-match-btn"><Swords size={14}/>{myMatch ? "Rejoindre ma room de match" : "Suivre le premier match"}</button>
+        ) : (
+          <button onClick={() => navigate(`/tournament/${id}`)} className="btn-neon" data-testid="open-bracket-btn"><Radio size={14}/>Ouvrir le tournoi</button>
+        )}
       </div>
+      <BracketSection tid={id}/>
     </div>
   );
 };
@@ -1661,6 +1776,7 @@ const Profile = () => {
   const { user: currentUser, token, setUser } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [rewardHistory, setRewardHistory] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
   const [syncError, setSyncError] = useState("");
@@ -1789,6 +1905,28 @@ const Profile = () => {
       custom_avatar_url: currentUser.custom_avatar_url || "",
     });
   }, [currentUser]);
+  useEffect(() => {
+    if (!token) {
+      setRewardHistory([]);
+      return;
+    }
+    let cancelled = false;
+    axios
+      .get(`${API}/rewards/redemptions/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((response) => {
+        if (!cancelled) {
+          setRewardHistory(response.data || []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRewardHistory([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
   useEffect(() => {
     const steamError = new URLSearchParams(location.search).get("steam_error");
     if (!steamError) return;
@@ -2063,6 +2201,7 @@ const Profile = () => {
                   </button>
                 )
               )}
+              {currentUser && <Link to="/boutique" className="btn-ghost text-xs"><ShoppingBag size={14}/>Boutique ({formatMetric(p.tokens ?? 0)} pts)</Link>}
               {p.stats_profile_url && (
                 <a href={p.stats_profile_url} target="_blank" rel="noreferrer" className="btn-ghost text-xs" data-testid="profile-open-source-btn">
                   <ExternalLink size={14}/>Voir la source
@@ -2196,6 +2335,27 @@ const Profile = () => {
               <div key={item.label} className="glass p-6">
                 <div className="text-xs uppercase tracking-widest text-white/50">{item.label}</div>
                 <div className={`font-display text-4xl mt-2 ${item.accent}`}>{item.value}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {currentUser && (
+        <>
+          <SectionTitle sub="Boutique" title="Mes rewards recentes"/>
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {rewardHistory.length === 0 && <div className="glass p-6 text-white/40 md:col-span-2 xl:col-span-3">Aucune reward reservee pour le moment.</div>}
+            {rewardHistory.slice(0, 6).map((item) => (
+              <div key={item.id} className="glass p-5" data-testid={`profile-redemption-${item.id}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-display text-lg uppercase">{item.reward_title || item.reward_id}</div>
+                  <Badge variant={item.status === "delivered" ? "verified" : item.status === "cancelled" ? "offline" : "soon"}>
+                    {REWARD_REDEMPTION_STATUS_LABELS[item.status] || item.status}
+                  </Badge>
+                </div>
+                <div className="text-sm text-white/55 mt-3">{item.cost_tokens} pts</div>
+                <div className="text-xs text-white/40 mt-2">{new Date(item.created_at).toLocaleString("fr-FR")}</div>
               </div>
             ))}
           </div>
@@ -2599,9 +2759,72 @@ const TeamsPage = () => {
     }
   };
 
+  const updateMemberRole = async (member, role) => {
+    if (!myTeam || !member?.id) return;
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      await axios.post(
+        `${API}/teams/${myTeam.id}/members/${member.id}/role`,
+        { source: member.source || "user", role },
+        { headers: authH },
+      );
+      setMessage(role === "captain" ? "Capitanat transfere." : "Role membre mis a jour.");
+      await refreshAll();
+    } catch (roleError) {
+      setError(roleError?.response?.data?.detail || "Impossible de modifier ce membre.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeMember = async (member) => {
+    if (!myTeam || !member?.id) return;
+    if (!window.confirm(`Retirer ${member.pseudo} de l'equipe ?`)) return;
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      await axios.post(
+        `${API}/teams/${myTeam.id}/members/${member.id}/remove`,
+        { source: member.source || "user" },
+        { headers: authH },
+      );
+      setMessage(`${member.pseudo} a ete retire de l'equipe.`);
+      await refreshAll();
+    } catch (removeError) {
+      setError(removeError?.response?.data?.detail || "Impossible de retirer ce membre.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const rosterMembers = selectedTeam?.members || [];
   const rosterMvp = resolveTeamMvp(rosterMembers);
   const rosterOthers = rosterMembers.filter((member) => `${member.id || member.pseudo}` !== `${rosterMvp?.id || rosterMvp?.pseudo}`);
+  const canManageSelectedTeam = Boolean(myTeam?.id && isCaptain && selectedTeam?.id === myTeam.id);
+  const renderMemberActions = (member) => {
+    if (!canManageSelectedTeam) return null;
+    const isSelf = member.source !== "seed" && `${member.id}` === `${user?.id}`;
+    const canPromote = member.source === "user" && !isSelf && member.team_role !== "captain";
+    const canRemove = !isSelf && member.team_role !== "captain";
+    if (!canPromote && !canRemove) return null;
+    return (
+      <>
+        {canPromote && (
+          <button disabled={busy} onClick={() => updateMemberRole(member, "captain")} className="btn-ghost text-xs">
+            <Crown size={12}/>Passer capitaine
+          </button>
+        )}
+        {canRemove && (
+          <button disabled={busy} onClick={() => removeMember(member)} className="btn-ghost text-xs text-red-300">
+            <Trash2 size={12}/>Retirer
+          </button>
+        )}
+      </>
+    );
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="teams-page">
@@ -2751,6 +2974,11 @@ const TeamsPage = () => {
                 </Badge>
               </div>
               <p className="text-white/60 mt-4">{selectedTeam.description || "Roster actif de la beta avec carte premium joueur et lecture rapide des impacts."}</p>
+              {canManageSelectedTeam && (
+                <div className="mt-4 border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70">
+                  Capitaine: tu peux maintenant transferer le capitanat ou retirer un membre directement depuis les cartes joueur ci-dessous.
+                </div>
+              )}
               <div className="grid grid-cols-4 gap-3 mt-6">
                 <div className="border border-white/10 p-4"><div className="text-[10px] uppercase tracking-widest text-white/35">ELO</div><div className="font-display text-2xl text-orange-500 mt-1">{formatMetric(selectedTeam.elo)}</div></div>
                 <div className="border border-white/10 p-4"><div className="text-[10px] uppercase tracking-widest text-white/35">LVL</div><div className="font-display text-2xl mt-1">{formatMetric(selectedTeam.level)}</div></div>
@@ -2760,7 +2988,7 @@ const TeamsPage = () => {
               <div className="mt-6">
                 <div className="text-xs uppercase tracking-[0.3em] text-yellow-neon mb-3">Joueur MVP</div>
                 {rosterMvp ? (
-                  <TeamMemberPremiumCard member={rosterMvp} teamColor={selectedTeam.logo_color} isMvp />
+                  <TeamMemberPremiumCard member={rosterMvp} teamColor={selectedTeam.logo_color} isMvp actions={renderMemberActions(rosterMvp)} />
                 ) : (
                   <div className="border border-white/10 p-5 text-white/40">Aucun joueur detaille pour cette equipe.</div>
                 )}
@@ -2778,6 +3006,7 @@ const TeamsPage = () => {
                     teamColor={selectedTeam.logo_color}
                     compact
                     rank={index + 1}
+                    actions={renderMemberActions(member)}
                   />
                 ))}
               </div>
@@ -3661,8 +3890,9 @@ const RewardsStorePage = () => {
   const [balance, setBalance] = useState(null);
   const [redemptions, setRedemptions] = useState([]);
   const [busyId, setBusyId] = useState(null);
+  const [categoryFilter, setCategoryFilter] = useState("all");
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     const rewardsResponse = await axios.get(`${API}/rewards`);
     setRewards(rewardsResponse.data);
     if (token) {
@@ -3676,26 +3906,11 @@ const RewardsStorePage = () => {
       setBalance(null);
       setRedemptions([]);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
-    const load = async () => {
-      const rewardsResponse = await axios.get(`${API}/rewards`);
-      setRewards(rewardsResponse.data);
-      if (token) {
-        const [balanceResponse, redemptionsResponse] = await Promise.all([
-          axios.get(`${API}/duels/balance`, { headers: { Authorization: `Bearer ${token}` } }),
-          axios.get(`${API}/rewards/redemptions/me`, { headers: { Authorization: `Bearer ${token}` } }),
-        ]);
-        setBalance(balanceResponse.data.tokens);
-        setRedemptions(redemptionsResponse.data);
-      } else {
-        setBalance(null);
-        setRedemptions([]);
-      }
-    };
-    load().catch(() => {});
-  }, [token]);
+    refresh().catch(() => {});
+  }, [refresh]);
 
   const redeem = async (rewardId) => {
     if (!token) {
@@ -3714,14 +3929,36 @@ const RewardsStorePage = () => {
     }
   };
 
+  const rewardCategories = Array.from(new Set(rewards.map((reward) => reward.category).filter(Boolean)));
+  const visibleRewards = categoryFilter === "all"
+    ? rewards
+    : rewards.filter((reward) => reward.category === categoryFilter);
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="rewards-page">
       <div className="flex items-center gap-3"><ShoppingBag className="text-cyan-neon" size={32}/><h1 className="font-display text-5xl uppercase">Boutique de points</h1></div>
       <p className="text-white/50 mt-2">Utilise les jetons gagnés dans la plateforme pour débloquer des rewards non compétitives.</p>
+      {rewardCategories.length > 1 && (
+        <div className="flex flex-wrap gap-2 mt-6">
+          <button onClick={() => setCategoryFilter("all")} className={`btn-ghost text-xs ${categoryFilter === "all" ? "border-cyan-neon text-cyan-neon" : ""}`}>Tout</button>
+          {rewardCategories.map((category) => (
+            <button
+              key={category}
+              onClick={() => setCategoryFilter(category)}
+              className={`btn-ghost text-xs ${categoryFilter === category ? "border-cyan-neon text-cyan-neon" : ""}`}
+            >
+              {category}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="grid lg:grid-cols-[1.5fr_1fr] gap-4 mt-8">
         <div className="grid md:grid-cols-2 gap-4">
-          {rewards.length === 0 && <div className="glass p-6 text-white/40">Aucune reward active.</div>}
-          {rewards.map((reward) => (
+          {visibleRewards.length === 0 && <div className="glass p-6 text-white/40">Aucune reward active dans ce filtre.</div>}
+          {visibleRewards.map((reward) => {
+            const canAfford = balance === null || Number(balance) >= Number(reward.cost_tokens);
+            const outOfStock = Number(reward.stock) <= 0;
+            return (
             <div key={reward.id} className="glass p-6" data-testid={`reward-card-${reward.id}`} style={{ borderColor: `${reward.accent_color || "#00F0FF"}55` }}>
               <div className="flex items-center justify-between gap-3">
                 <Badge variant={reward.stock > 0 ? "verified" : "offline"}>{reward.category}</Badge>
@@ -3732,11 +3969,14 @@ const RewardsStorePage = () => {
               <p className="text-sm text-white/50 mt-4">{reward.description}</p>
               <div className="text-xs uppercase tracking-widest text-white/40 mt-4">Stock: {reward.stock}</div>
               <div className="text-sm text-white/50 mt-2">{reward.delivery_notes}</div>
-              <button disabled={busyId === reward.id || reward.stock <= 0} onClick={() => redeem(reward.id)} className="btn-neon mt-5">
+              {!user && <div className="text-xs text-white/40 mt-4">Connectez-vous pour utiliser vos points.</div>}
+              {user && !canAfford && <div className="text-xs text-red-300 mt-4">Solde insuffisant pour cette reward.</div>}
+              {outOfStock && <div className="text-xs text-white/40 mt-4">Rupture temporaire de stock.</div>}
+              <button disabled={busyId === reward.id || outOfStock || (!!user && !canAfford)} onClick={() => redeem(reward.id)} className="btn-neon mt-5">
                 <Package size={14}/>{busyId === reward.id ? "Traitement..." : "Réserver"}
               </button>
             </div>
-          ))}
+          );})}
         </div>
         <div className="space-y-4">
           <div className="glass p-6">
@@ -3752,7 +3992,9 @@ const RewardsStorePage = () => {
                 <div key={item.id} className="border border-white/10 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div className="font-display text-sm uppercase">{item.reward_title || item.reward_id}</div>
-                    <Badge variant={item.status === "delivered" ? "verified" : item.status === "cancelled" ? "offline" : "soon"}>{item.status}</Badge>
+                    <Badge variant={item.status === "delivered" ? "verified" : item.status === "cancelled" ? "offline" : "soon"}>
+                      {REWARD_REDEMPTION_STATUS_LABELS[item.status] || item.status}
+                    </Badge>
                   </div>
                   <div className="text-sm text-white/50 mt-2">{item.cost_tokens} pts • {new Date(item.created_at).toLocaleString("fr-FR")}</div>
                 </div>
@@ -3775,21 +4017,38 @@ const TournamentAdmin = () => {
   const authH = token ? { Authorization: `Bearer ${token}` } : {};
   const [tours, setTours] = useState([]);
   const [busy, setBusy] = useState(false);
-  const refresh = () => axios.get(`${API}/tournaments`).then(r => setTours(r.data));
+  const [runtimeMessage, setRuntimeMessage] = useState("");
+  const refresh = useCallback(() => axios.get(`${API}/tournaments`).then(r => setTours(r.data)), []);
   useEffect(() => {
     refresh();
     const handler = () => refresh();
     window.addEventListener("readyup-tournaments-changed", handler);
     return () => window.removeEventListener("readyup-tournaments-changed", handler);
-  }, []);
+  }, [refresh]);
   const transition = async (id, to) => {
     setBusy(true);
+    setRuntimeMessage("");
     try { await axios.post(`${API}/tournaments/${id}/transition`, { to }, { headers: authH }); await refresh(); }
     catch (e) { alert(e.response?.data?.detail || "Erreur"); } finally { setBusy(false); }
+  };
+  const kickoffRuntime = async (id) => {
+    setBusy(true);
+    setRuntimeMessage("");
+    try {
+      const response = await axios.post(`${API}/tournaments/${id}/runtime/kickoff`, {}, { headers: authH });
+      const launched = response.data?.launched_matches?.length || 0;
+      setRuntimeMessage(launched > 0 ? `${launched} match(s) CS2 lance(s) ou relance(s).` : "Runtime relance. En attente d'un match pret ou d'un serveur libre.");
+      await refresh();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Erreur relance runtime");
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <div data-testid="tournament-admin">
       <SectionTitle sub="Machine à états" title="Cycle de vie des tournois"/>
+      {runtimeMessage && <div className="glass p-4 mb-4 text-sm text-cyan-neon">{runtimeMessage}</div>}
       <div className="grid md:grid-cols-2 gap-4">
         {tours.map(t => (
           <div key={t.id} className="glass p-5" data-testid={`tadmin-${t.id}`}>
@@ -3804,6 +4063,11 @@ const TournamentAdmin = () => {
                 {(TRANSITIONS[t.status] || []).map(to => (
                   <button key={to} disabled={busy} onClick={() => transition(t.id, to)} className="btn-ghost text-xs" data-testid={`transition-${t.id}-${to}`}>→ {STATE_FR[to]}</button>
                 ))}
+                {["starting", "live"].includes(t.status) && (
+                  <button disabled={busy} onClick={() => kickoffRuntime(t.id)} className="btn-neon text-xs" data-testid={`runtime-kickoff-${t.id}`}>
+                    <Play size={12}/>Relancer runtime CS2
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -4782,28 +5046,25 @@ const RewardAdmin = () => {
   const [form, setForm] = useState(makeRewardForm());
   const [editingId, setEditingId] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [redemptionStatusFilter, setRedemptionStatusFilter] = useState("all");
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const [itemsResponse, redemptionsResponse] = await Promise.all([
-      axios.get(`${API}/admin/rewards`, { headers: authH }),
-      axios.get(`${API}/admin/rewards/redemptions`, { headers: authH }),
+      axios.get(`${API}/admin/rewards`, { headers }),
+      axios.get(`${API}/admin/rewards/redemptions`, {
+        params: redemptionStatusFilter === "all" ? {} : { status_f: redemptionStatusFilter },
+        headers,
+      }),
     ]);
     setItems(itemsResponse.data);
     setRedemptions(redemptionsResponse.data);
-  };
+  }, [redemptionStatusFilter, token]);
 
   useEffect(() => {
     if (!isAdmin) return;
-    const load = async () => {
-      const [itemsResponse, redemptionsResponse] = await Promise.all([
-        axios.get(`${API}/admin/rewards`, { headers: token ? { Authorization: `Bearer ${token}` } : {} }),
-        axios.get(`${API}/admin/rewards/redemptions`, { headers: token ? { Authorization: `Bearer ${token}` } : {} }),
-      ]);
-      setItems(itemsResponse.data);
-      setRedemptions(redemptionsResponse.data);
-    };
-    load().catch(() => {});
-  }, [isAdmin, token]);
+    refresh().catch(() => {});
+  }, [isAdmin, refresh, token]);
 
   const reset = () => {
     setEditingId(null);
@@ -4917,6 +5178,15 @@ const RewardAdmin = () => {
         ))}
       </div>
       <SectionTitle sub="Traitement" title="Demandes boutique"/>
+      <div className="glass p-4 mb-4">
+        <label className="text-xs uppercase tracking-widest text-white/40">Filtre statut</label>
+        <select value={redemptionStatusFilter} onChange={(event) => setRedemptionStatusFilter(event.target.value)} className="mt-3 max-w-xs">
+          <option value="all">Toutes</option>
+          <option value="pending">En attente</option>
+          <option value="delivered">Livree</option>
+          <option value="cancelled">Annulee</option>
+        </select>
+      </div>
       <div className="grid md:grid-cols-2 gap-4">
         {redemptions.length === 0 && <div className="glass p-6 text-white/40">Aucune demande boutique.</div>}
         {redemptions.slice(0, 12).map((item) => (
@@ -4926,7 +5196,9 @@ const RewardAdmin = () => {
                 <div className="font-display text-lg uppercase">{item.reward_title || item.reward_id}</div>
                 <div className="text-xs text-white/40 mt-1">{item.pseudo} • {item.cost_tokens} pts</div>
               </div>
-              <Badge variant={item.status === "delivered" ? "verified" : item.status === "cancelled" ? "offline" : "soon"}>{item.status}</Badge>
+              <Badge variant={item.status === "delivered" ? "verified" : item.status === "cancelled" ? "offline" : "soon"}>
+                {REWARD_REDEMPTION_STATUS_LABELS[item.status] || item.status}
+              </Badge>
             </div>
             <div className="text-xs text-white/40 mt-3">{new Date(item.created_at).toLocaleString("fr-FR")}</div>
             {item.status === "pending" && (
@@ -4951,27 +5223,41 @@ const MatchReportsAdmin = () => {
   const { token } = useAuth();
   const [reports, setReports] = useState([]);
   const [busyId, setBusyId] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
   const authH = token ? { Authorization: `Bearer ${token}` } : {};
 
-  const load = async () => {
-    try {
-      const response = await axios.get(`${API}/admin/matches/reports?limit=50`, { headers: authH });
-      setReports(response.data || []);
-    } catch {
-      setReports([]);
-    }
-  };
-
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!token) {
       setReports([]);
       return;
     }
-    axios
-      .get(`${API}/admin/matches/reports?limit=50`, { headers: { Authorization: `Bearer ${token}` } })
-      .then((response) => setReports(response.data || []))
-      .catch(() => setReports([]));
-  }, [token]);
+    try {
+      const params = { limit: 50 };
+      if (statusFilter !== "all") {
+        params.status_f = statusFilter;
+      }
+      if (sourceFilter !== "all") {
+        params.source_f = sourceFilter;
+      }
+      const response = await axios.get(`${API}/admin/matches/reports`, {
+        params,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setReports(response.data || []);
+    } catch {
+      setReports([]);
+    }
+  }, [sourceFilter, statusFilter, token]);
+
+  useEffect(() => {
+    load().catch(() => {});
+    if (!token) {
+      return undefined;
+    }
+    const id = setInterval(() => { load().catch(() => {}); }, 10000);
+    return () => clearInterval(id);
+  }, [load, token]);
 
   const updateStatus = async (reportId, status) => {
     const resolution_note = window.prompt("Note de traitement (optionnelle) :", "") ?? "";
@@ -4986,14 +5272,71 @@ const MatchReportsAdmin = () => {
     }
   };
 
+  const issueCardFromReport = async (item, severity) => {
+    if (!item.target_user_id) return;
+    const defaultReason = `${MATCH_REPORT_LABELS[item.kind] || item.kind} • ${item.message}`.slice(0, 280);
+    const reason = window.prompt(`Motif du carton ${severity === "red" ? "rouge" : "jaune"} :`, defaultReason);
+    if (reason === null) return;
+    setBusyId(`${item.id}-${severity}`);
+    try {
+      await axios.post(
+        `${API}/cards`,
+        {
+          target_user_id: item.target_user_id,
+          severity,
+          reason: reason.trim() || defaultReason,
+          match_id: item.match_id,
+        },
+        { headers: authH },
+      );
+      await load();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur carton");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const openCount = reports.filter((item) => item.status === "open").length;
+  const acknowledgedCount = reports.filter((item) => item.status === "acknowledged").length;
+  const cs2Count = reports.filter((item) => item.source === "cs2_chat").length;
 
   return (
     <div data-testid="match-reports-admin">
       <SectionTitle sub="Arbitrage live" title="Signalements de match"/>
-      <div className="glass p-6 mb-4">
-        <div className="text-xs uppercase tracking-widest text-white/40">Incidents ouverts</div>
-        <div className="font-display text-4xl text-red-400 mt-2">{openCount}</div>
+      <div className="grid md:grid-cols-3 gap-4 mb-4">
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Incidents ouverts</div>
+          <div className="font-display text-4xl text-red-400 mt-2">{openCount}</div>
+        </div>
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Pris en compte</div>
+          <div className="font-display text-4xl text-yellow-neon mt-2">{acknowledgedCount}</div>
+        </div>
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Origine CS2</div>
+          <div className="font-display text-4xl text-cyan-neon mt-2">{cs2Count}</div>
+        </div>
+      </div>
+      <div className="glass p-4 mb-4 grid md:grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs uppercase tracking-widest text-white/40">Filtre statut</label>
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <option value="all">Tous</option>
+            {Object.entries(MATCH_REPORT_STATUS_LABELS).map(([key, label]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs uppercase tracking-widest text-white/40">Filtre origine</label>
+          <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
+            <option value="all">Toutes</option>
+            {Object.entries(MATCH_REPORT_SOURCE_LABELS).map(([key, label]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
+        </div>
       </div>
       <div className="space-y-4">
         {reports.length === 0 && <div className="glass p-6 text-white/40">Aucun signalement recent.</div>}
@@ -5019,6 +5362,12 @@ const MatchReportsAdmin = () => {
               <button disabled={busyId === item.id} onClick={() => updateStatus(item.id, "acknowledged")} className="btn-ghost text-xs">Prendre en compte</button>
               <button disabled={busyId === item.id} onClick={() => updateStatus(item.id, "resolved")} className="btn-ghost text-xs text-cyan-neon">Resolu</button>
               <button disabled={busyId === item.id} onClick={() => updateStatus(item.id, "rejected")} className="btn-ghost text-xs text-white/60">Rejeter</button>
+              {item.target_user_id && (
+                <>
+                  <button disabled={busyId === `${item.id}-yellow`} onClick={() => issueCardFromReport(item, "yellow")} className="btn-ghost text-xs text-yellow-neon">Carton jaune</button>
+                  <button disabled={busyId === `${item.id}-red`} onClick={() => issueCardFromReport(item, "red")} className="btn-ghost text-xs text-red-400">Carton rouge</button>
+                </>
+              )}
             </div>
           </div>
         ))}
@@ -5037,20 +5386,21 @@ const Admin = () => {
   const [busy, setBusy] = useState(false);
   const authH = token ? { Authorization: `Bearer ${token}` } : {};
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const [cardsResponse, tournamentsResponse, statsResponse] = await Promise.all([
-      axios.get(`${API}/cards?status_f=active`),
+      axios.get(`${API}/cards?status_f=active`, { headers }),
       axios.get(`${API}/tournaments`),
       axios.get(`${API}/stats/global`),
     ]);
     setCards(cardsResponse.data);
     setActiveTournaments(tournamentsResponse.data.filter((tournament) => tournament.status !== "closed").length);
     setOnlineNow(statsResponse.data.online_now || 0);
-  };
+  }, [token]);
   useEffect(() => {
-    if (!user?.is_admin) return;
-    refresh();
-  }, [user?.is_admin]);
+    if (!user?.is_admin || !token) return;
+    refresh().catch(() => {});
+  }, [refresh, token, user?.is_admin]);
 
   const issue = async (e) => {
     e.preventDefault(); setBusy(true);

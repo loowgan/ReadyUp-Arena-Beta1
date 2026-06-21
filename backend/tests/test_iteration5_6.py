@@ -101,7 +101,8 @@ class TestTournament:
         # Ensure tr6 status is open/registering
         r0 = s.get(f"{API}/tournaments/tr6", timeout=15).json()
         assert r0["status"] in ("open", "registering"), f"tr6 not open: {r0['status']}"
-        before = r0.get("registered", 0)
+        before_regs = r0.get("registrations_count", 0)
+        before_solos = r0.get("solo_queue_original_count", 0)
         r = s.post(f"{API}/tournaments/tr6/register",
                    json={"entity_type": "solo", "entity_name": "TestUser"},
                    headers=auth_headers, timeout=15)
@@ -112,9 +113,10 @@ class TestTournament:
             assert data["entity_type"] == "solo"
             assert data["entity_name"] == "TestUser"
             assert data["tournament_id"] == "tr6"
-            # status & count check
+            # status & queue check
             r2 = s.get(f"{API}/tournaments/tr6", timeout=15).json()
-            assert r2.get("registered", 0) >= before + 1
+            assert r2.get("registrations_count", 0) >= before_regs + 1
+            assert r2.get("solo_queue_original_count", 0) >= before_solos + 1
             assert r2["status"] in ("registering", "starting", "live")
 
     def test_register_duplicate_409(self, s, auth_headers):

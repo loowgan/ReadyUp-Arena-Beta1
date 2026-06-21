@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -12,8 +13,10 @@ from cs2 import (
     _apply_matchzy_runtime_state,
     apply_matchzy_bracket_result,
     apply_matchzy_duel_result,
+    auto_launch_ready_bracket_matches,
     build_live_matches_snapshot,
     extract_matchzy_winner_team,
+    launch_bracket_match_on_server,
     public_server_payload,
 )
 
@@ -117,11 +120,14 @@ class FakeDB:
         self.brackets = FakeCollection(collections.get("brackets"))
         self.duels = FakeCollection(collections.get("duels"))
         self.users = FakeCollection(collections.get("users"))
+        self.players = FakeCollection(collections.get("players"))
         self.matchzy_events = FakeCollection(collections.get("matchzy_events"))
         self.cs2_servers = FakeCollection(collections.get("cs2_servers"))
         self.matchzy_match_configs = FakeCollection(collections.get("matchzy_match_configs"))
         self.duel_match_configs = FakeCollection(collections.get("duel_match_configs"))
+        self.cs2_bridge_commands = FakeCollection(collections.get("cs2_bridge_commands"))
         self.tournament_registrations = FakeCollection(collections.get("tournament_registrations"))
+        self.tournaments = FakeCollection(collections.get("tournaments"))
         self.teams = FakeCollection(collections.get("teams"))
 
 
@@ -420,3 +426,149 @@ def test_apply_manual_bracket_result_releases_server_and_marks_match_finished():
     assert server["current_bracket_match_id"] is None
     assert server["last_match_id"] == match_id
     assert journal_calls and journal_calls[0][0] == "bracket_result"
+
+
+def test_launch_bracket_match_on_server_queues_matchzy_for_real_team(monkeypatch):
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.readyup.test")
+    monkeypatch.delenv("MATCHZY_WEBHOOK_SECRET", raising=False)
+    monkeypatch.delenv("MATCHZY_CONFIG_TOKEN", raising=False)
+
+    bracket = generate_single(
+        [
+            {"id": "team-alpha", "name": "Alpha"},
+            {"id": "team-beta", "name": "Beta"},
+        ]
+    )
+    bracket["tournament_id"] = "tr-auto"
+    bracket["version"] = 0
+    match_id = bracket["matches"]["W"][0]["id"]
+    db = FakeDB(
+        tournaments=[{"id": "tr-auto", "name": "ReadyUp Cup", "maps": ["de_inferno"]}],
+        brackets=[bracket],
+        teams=[
+            {"id": "team-alpha", "name": "Alpha"},
+            {"id": "team-beta", "name": "Beta"},
+        ],
+        users=[
+            {"id": "u-a1", "pseudo": "AlphaCap", "steam_id": "76561111111111111", "team_id": "team-alpha", "team_role": "captain"},
+            {"id": "u-b1", "pseudo": "BetaCap", "steam_id": "76561111111111112", "team_id": "team-beta", "team_role": "captain"},
+        ],
+        cs2_servers=[
+            {
+                "id": "srv-bridge-1",
+                "name": "Arena Bridge #1",
+                "host": "185.245.99.120",
+                "public_host": "185.245.99.120",
+                "port": 30060,
+                "game_port": 30060,
+                "status": "online",
+                "current_match_id": None,
+                "matchzy_enabled": True,
+                "bridge_token_hash": "token-hash",
+            }
+        ],
+    )
+    journal_calls = []
+
+    async def journal(event_type, user_id, meta):
+        journal_calls.append((event_type, user_id, meta))
+
+    launched = _run(
+        launch_bracket_match_on_server(
+            db,
+            journal,
+            "tr-auto",
+            match_id,
+            "srv-bridge-1",
+            created_by="admin-1",
+            players_per_team=1,
+        )
+    )
+
+    server = _run(db.cs2_servers.find_one({"id": "srv-bridge-1"}))
+    config_doc = _run(db.matchzy_match_configs.find_one({"match_id": match_id}))
+    saved_bracket = _run(db.brackets.find_one({"tournament_id": "tr-auto"}))
+    saved_match = saved_bracket["matches"]["W"][0]
+    queued_command = _run(db.cs2_bridge_commands.find_one({"server_id": "srv-bridge-1"}))
+
+    assert launched["queued"] is True
+    assert launched["match_id"] == match_id
+    assert server["current_match_id"] == match_id
+    assert server["current_tournament_id"] == "tr-auto"
+    assert saved_match["launch_status"] == "launch_pending"
+    assert config_doc["config"]["maplist"] == ["de_inferno"]
+    assert config_doc["config"]["team1"]["players"] == {"76561111111111111": "AlphaCap"}
+    assert config_doc["config"]["team2"]["players"] == {"76561111111111112": "BetaCap"}
+    assert queued_command["kind"] == "launch_bracket_match"
+    assert journal_calls and journal_calls[0][0] == "cs2_bracket_match_launched"
+
+
+def test_auto_launch_ready_bracket_matches_supports_auto_solo_rosters(monkeypatch):
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.readyup.test")
+    monkeypatch.delenv("MATCHZY_WEBHOOK_SECRET", raising=False)
+    monkeypatch.delenv("MATCHZY_CONFIG_TOKEN", raising=False)
+
+    entrants = [
+        {
+            "id": "auto-solo-1",
+            "name": "Escouade solo 1",
+            "generated_from_solos": True,
+            "members": [
+                {"user_id": "solo-1", "pseudo": "SoloOne", "steam_id": "76561111111111121", "team_role": "captain"},
+            ],
+        },
+        {
+            "id": "team-beta",
+            "name": "Beta",
+        },
+    ]
+    bracket = generate_single(entrants)
+    bracket["tournament_id"] = "tr-solo-auto"
+    bracket["version"] = 0
+    match_id = bracket["matches"]["W"][0]["id"]
+    db = FakeDB(
+        tournaments=[{"id": "tr-solo-auto", "name": "Solo Mix Cup", "maps": ["de_mirage"]}],
+        brackets=[bracket],
+        teams=[{"id": "team-beta", "name": "Beta"}],
+        users=[
+            {"id": "u-b1", "pseudo": "BetaCap", "steam_id": "76561111111111122", "team_id": "team-beta", "team_role": "captain"},
+        ],
+        cs2_servers=[
+            {
+                "id": "srv-bridge-2",
+                "name": "Arena Bridge #2",
+                "host": "185.245.99.120",
+                "public_host": "185.245.99.120",
+                "port": 30060,
+                "game_port": 30060,
+                "status": "online",
+                "current_match_id": None,
+                "matchzy_enabled": True,
+                "bridge_token_hash": "token-hash-2",
+            }
+        ],
+    )
+
+    async def journal(_event_type, _user_id, _meta):
+        return None
+
+    launched = _run(
+        auto_launch_ready_bracket_matches(
+            db,
+            journal,
+            "tr-solo-auto",
+            created_by=None,
+            players_per_team=1,
+            max_matches=1,
+        )
+    )
+
+    config_doc = _run(db.matchzy_match_configs.find_one({"match_id": match_id}))
+    saved_bracket = _run(db.brackets.find_one({"tournament_id": "tr-solo-auto"}))
+    saved_match = saved_bracket["matches"]["W"][0]
+
+    assert len(launched) == 1
+    assert config_doc["config"]["team1"]["name"] == "Escouade solo 1"
+    assert config_doc["config"]["team1"]["players"] == {"76561111111111121": "SoloOne"}
+    assert config_doc["config"]["team2"]["players"] == {"76561111111111122": "BetaCap"}
+    assert saved_match["launch_status"] == "launch_pending"

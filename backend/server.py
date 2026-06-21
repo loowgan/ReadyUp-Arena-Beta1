@@ -51,6 +51,7 @@ db = client[db_name]
 import redis_state as rs
 from seed_data import seed_all
 from cs2 import (
+    auto_launch_ready_bracket_matches,
     backend_public_base,
     build_live_matches_snapshot,
     build_cs2_router,
@@ -62,9 +63,16 @@ from cs2 import (
     public_server_payload,
     run_server_command,
 )
-from bracket import build_bracket_router
+from bracket import build_bracket_router, generate_double, generate_single
 from email_service import send_email, reset_email_html
 from fun_matches import FUN_MATCH_PLAYER_CAP, summarize_fun_match
+from tournament_flow import (
+    AUTO_TEAM_SIZE,
+    build_auto_solo_teams,
+    filter_solo_registrations_for_user_ids,
+    summarize_tournament_registration_counts,
+    summarize_tournament_registrations_from_regs,
+)
 
 app = FastAPI(title="ReadyUp Arena API")
 api_router = APIRouter(prefix="/api")
@@ -990,81 +998,6 @@ def _remaining_slots(max_entries: Optional[int], current_entries: int) -> Option
     return max(max_entries - current_entries, 0)
 
 
-AUTO_TEAM_SIZE = 5
-AUTO_TEAM_MIN_TEAMS = 2
-AUTO_TEAM_COLORS = ["#FF4600", "#00F0FF", "#FF003C", "#10B981", "#8B5CF6", "#FFB800"]
-
-
-def _auto_solo_team_count(solo_count: int, slots_remaining: int) -> int:
-    if slots_remaining <= 0:
-        return 0
-    possible_teams = min(max(int(solo_count or 0), 0) // AUTO_TEAM_SIZE, slots_remaining)
-    return possible_teams if possible_teams >= AUTO_TEAM_MIN_TEAMS else 0
-
-
-def _summarize_tournament_registration_counts(capacity: int, manual_team_count: int, solo_count: int) -> dict:
-    manual_team_count = max(int(manual_team_count or 0), 0)
-    solo_count = max(int(solo_count or 0), 0)
-    capacity = max(int(capacity or 0), 0)
-    slots_remaining_from_manual = max(capacity - manual_team_count, 0)
-    auto_generated_teams_count = _auto_solo_team_count(solo_count, slots_remaining_from_manual)
-    registered_effective = manual_team_count + auto_generated_teams_count
-    solo_waiting_count = max(solo_count - (auto_generated_teams_count * AUTO_TEAM_SIZE), 0)
-    max_solo_players = slots_remaining_from_manual * AUTO_TEAM_SIZE if slots_remaining_from_manual >= AUTO_TEAM_MIN_TEAMS else 0
-    return {
-        "manual_teams_count": manual_team_count,
-        "solo_queue_original_count": solo_count,
-        "slots_remaining_from_manual": slots_remaining_from_manual,
-        "auto_generated_teams_count": auto_generated_teams_count,
-        "registered_effective": registered_effective,
-        "solo_waiting_count": solo_waiting_count,
-        "team_slots_remaining": max(capacity - registered_effective, 0),
-        "solo_slots_remaining": max(max_solo_players - solo_count, 0),
-        "max_solo_players": max_solo_players,
-    }
-
-
-def _build_auto_solo_teams(solo_entries: list[dict], slots_remaining: int) -> tuple[list[dict], list[dict]]:
-    auto_team_count = _auto_solo_team_count(len(solo_entries), slots_remaining)
-    if auto_team_count <= 0:
-        return [], solo_entries
-
-    teams: list[dict] = []
-    consumed = auto_team_count * AUTO_TEAM_SIZE
-    for index in range(auto_team_count):
-        chunk = solo_entries[index * AUTO_TEAM_SIZE:(index + 1) * AUTO_TEAM_SIZE]
-        if len(chunk) < AUTO_TEAM_SIZE:
-            break
-        avg_elo = round(sum(float(player.get("elo") or 0) for player in chunk) / len(chunk))
-        avg_level = round(sum(float(player.get("level") or 1) for player in chunk) / len(chunk))
-        avg_reliability = round(sum(float(player.get("reliability") or 50) for player in chunk) / len(chunk))
-        team_name = f"Escouade solo {index + 1}"
-        color = AUTO_TEAM_COLORS[index % len(AUTO_TEAM_COLORS)]
-        teams.append({
-            "id": f"auto-solo-{index + 1}",
-            "name": team_name,
-            "tag": f"S{index + 1:02d}",
-            "logo_color": color,
-            "country": chunk[0].get("country") or "EU",
-            "level": avg_level,
-            "elo": avg_elo,
-            "wins": 0,
-            "losses": 0,
-            "trophies": 0,
-            "reliability": avg_reliability,
-            "members_count": len(chunk),
-            "members_limit": AUTO_TEAM_SIZE,
-            "captain_pseudo": chunk[0].get("pseudo"),
-            "description": "Equipe auto-composee a partir de la file solo du tournoi.",
-            "language": "MULTI",
-            "discord_url": None,
-            "recruitment_status": "closed",
-            "members": chunk,
-            "generated_from_solos": True,
-        })
-    return teams, solo_entries[consumed:]
-
-
 async def _build_tournament_registration_snapshot(tournament_doc: dict) -> dict:
     tid = tournament_doc["id"]
     regs = await db.tournament_registrations.find({"tournament_id": tid}, {"_id": 0}).sort("created_at", 1).to_list(300)
@@ -1117,13 +1050,13 @@ async def _build_tournament_registration_snapshot(tournament_doc: dict) -> dict:
             "source": "solo_registration",
         })
 
-    summary = _summarize_tournament_registration_counts(
+    summary = summarize_tournament_registration_counts(
         int(tournament_doc.get("capacity", 0) or 0),
         len(team_entries),
         len(solo_entries),
     )
     slots_remaining = summary["slots_remaining_from_manual"]
-    auto_teams, remaining_solos = _build_auto_solo_teams(solo_entries, slots_remaining)
+    auto_teams, remaining_solos = build_auto_solo_teams(solo_entries, slots_remaining)
 
     return {
         "registrations": regs,
@@ -1147,16 +1080,7 @@ async def _build_tournament_registration_summary(tournament_doc: dict) -> dict:
         {"tournament_id": tournament_doc["id"]},
         {"_id": 0, "entity_type": 1},
     ).to_list(300)
-    manual_team_count = sum(1 for reg in regs if reg.get("entity_type") == "team")
-    solo_count = len(regs) - manual_team_count
-    return {
-        **_summarize_tournament_registration_counts(
-            int(tournament_doc.get("capacity", 0) or 0),
-            manual_team_count,
-            solo_count,
-        ),
-        "registrations_count": len(regs),
-    }
+    return summarize_tournament_registrations_from_regs(int(tournament_doc.get("capacity", 0) or 0), regs)
 
 
 def _tournament_response_payload(tournament_doc: dict, snapshot: dict, include_lists: bool = False) -> dict:
@@ -1180,6 +1104,111 @@ def _tournament_response_payload(tournament_doc: dict, snapshot: dict, include_l
         payload["solo_queue"] = snapshot["solo_queue"]
         payload["auto_generated_teams"] = snapshot["auto_generated_teams"]
     return payload
+
+
+def _default_bracket_type_for_tournament(tournament_doc: dict) -> str:
+    raw = f"{tournament_doc.get('format', '')} {tournament_doc.get('mode', '')}".lower()
+    return "double" if "double" in raw else "single"
+
+
+async def _load_tournament_bracket_entrants(tid: str) -> list[dict]:
+    tournament = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not tournament:
+        return []
+    snapshot = await _build_tournament_registration_snapshot(tournament)
+    entrants: list[dict] = []
+    for index, team in enumerate(snapshot["teams_in"]):
+        entrant = {
+            "id": str(team.get("id") or f"{tid}-entrant-{index + 1}"),
+            "name": str(team.get("name") or f"Equipe {index + 1}"),
+            "generated_from_solos": bool(team.get("generated_from_solos")),
+            "elo": team.get("elo"),
+            "tag": team.get("tag"),
+            "logo_color": team.get("logo_color"),
+            "country": team.get("country"),
+            "level": team.get("level"),
+            "reliability": team.get("reliability"),
+            "captain_pseudo": team.get("captain_pseudo"),
+        }
+        members = []
+        for member in team.get("members") or []:
+            members.append({
+                "user_id": member.get("user_id") or member.get("id"),
+                "id": member.get("id") or member.get("user_id"),
+                "pseudo": member.get("pseudo"),
+                "steam_id": member.get("steam_id"),
+                "team_role": member.get("team_role"),
+                "role": member.get("role"),
+                "country": member.get("country"),
+                "elo": member.get("elo"),
+            })
+        if members:
+            entrant["members"] = members
+        entrants.append(entrant)
+    return entrants
+
+
+async def _ensure_tournament_can_start(tournament_doc: dict) -> dict:
+    snapshot = await _build_tournament_registration_snapshot(tournament_doc)
+    if snapshot["registered_effective"] < 2:
+        raise HTTPException(409, "Au moins 2 equipes confirmees sont requises pour lancer le tournoi")
+    return snapshot
+
+
+async def _ensure_tournament_bracket_generated(tournament_doc: dict, actor_user_id: Optional[str] = None) -> tuple[dict, bool]:
+    bracket_doc = await db.brackets.find_one({"tournament_id": tournament_doc["id"]}, {"_id": 0})
+    if bracket_doc:
+        return bracket_doc, False
+
+    entrants = await _load_tournament_bracket_entrants(tournament_doc["id"])
+    if len(entrants) < 2:
+        raise HTTPException(409, "Au moins 2 equipes confirmees sont requises pour generer le bracket")
+    bracket_type = _default_bracket_type_for_tournament(tournament_doc)
+    bracket_doc = generate_double(entrants) if bracket_type == "double" else generate_single(entrants)
+    bracket_doc["tournament_id"] = tournament_doc["id"]
+    bracket_doc["version"] = 0
+    await db.brackets.replace_one({"tournament_id": tournament_doc["id"]}, bracket_doc, upsert=True)
+    await journal(
+        "bracket_generated_auto",
+        actor_user_id,
+        {"tournament_id": tournament_doc["id"], "type": bracket_type, "entrants": len(entrants)},
+    )
+    return bracket_doc, True
+
+
+async def _kickoff_tournament_runtime(tid: str, actor_user_id: Optional[str] = None) -> dict:
+    tournament = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not tournament:
+        raise HTTPException(404, "Tournoi introuvable")
+
+    await _ensure_tournament_can_start(tournament)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    status_changed = tournament.get("status") != "live"
+    if status_changed:
+        await db.tournaments.update_one({"id": tid}, {"$set": {"status": "live", "status_changed_at": now_iso}})
+        tournament["status"] = "live"
+        tournament["status_changed_at"] = now_iso
+
+    bracket_doc, generated = await _ensure_tournament_bracket_generated(tournament, actor_user_id)
+    launched = await auto_launch_ready_bracket_matches(db, journal, tid, created_by=actor_user_id)
+    if status_changed or generated or launched:
+        await journal(
+            "tournament_runtime_kickoff",
+            actor_user_id,
+            {
+                "tournament_id": tid,
+                "status_live": True,
+                "generated_bracket": generated,
+                "launched_matches": [item.get("match_id") for item in launched],
+            },
+        )
+    return {"tournament": tournament, "bracket": bracket_doc, "generated_bracket": generated, "launched_matches": launched}
+
+
+async def _after_manual_bracket_result(tid: str, _match_id: str, bracket_doc: dict) -> Optional[dict]:
+    await auto_launch_ready_bracket_matches(db, journal, tid)
+    refreshed = await db.brackets.find_one({"tournament_id": tid}, {"_id": 0})
+    return refreshed or bracket_doc
 
 
 def _seconds_until_iso(value: Optional[str]) -> int:
@@ -2146,6 +2175,67 @@ async def leave_team(team_id: str, user=Depends(get_current_user)):
     return {"ok": True, "disbanded": False}
 
 
+@api_router.post("/teams/{team_id}/members/{member_id}/role", dependencies=[Depends(get_current_user)])
+async def set_team_member_role(team_id: str, member_id: str, req: TeamMemberAdminReq, user=Depends(get_current_user)):
+    team = await _get_team_or_404(team_id)
+    if not (_is_team_captain(team, user) or is_admin_email(user.get("email"))):
+        raise HTTPException(403, "Acces reserve au capitaine de l'equipe")
+    if req.source != "user":
+        raise HTTPException(400, "Seuls les comptes joueurs peuvent devenir capitaine")
+
+    member = await db.users.find_one({"id": member_id, "team_id": team_id}, {"_id": 0})
+    if not member:
+        raise HTTPException(404, "Membre introuvable")
+    if member["id"] == user["id"] and req.role != "captain":
+        raise HTTPException(400, "Utilisez l'action quitter l'equipe pour vous retirer")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if req.role == "captain":
+        await _assign_team_captain(team_id, member)
+        event_name = "team_captain_transferred" if not is_admin_email(user.get("email")) else "team_admin_captain_changed"
+        await journal(event_name, user["id"], {"team_id": team_id, "member_id": member_id})
+    elif team.get("captain_user_id") == member_id:
+        raise HTTPException(400, "Promouvez un autre joueur avant de retirer le capitanat")
+    else:
+        await db.users.update_one({"id": member_id}, {"$set": {"team_role": "member", "updated_at": now_iso}})
+        event_name = "team_role_changed" if not is_admin_email(user.get("email")) else "team_admin_role_changed"
+        await journal(event_name, user["id"], {"team_id": team_id, "member_id": member_id, "role": "member"})
+
+    updated = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    return await _team_public(updated, include_members=True)
+
+
+@api_router.post("/teams/{team_id}/members/{member_id}/remove", dependencies=[Depends(get_current_user)])
+async def remove_team_member(team_id: str, member_id: str, req: TeamMemberAdminReq, user=Depends(get_current_user)):
+    team = await _get_team_or_404(team_id)
+    if not (_is_team_captain(team, user) or is_admin_email(user.get("email"))):
+        raise HTTPException(403, "Acces reserve au capitaine de l'equipe")
+    if req.source == "seed":
+        member = await db.players.find_one({"id": member_id, "team_id": team_id}, {"_id": 0})
+        if not member:
+            raise HTTPException(404, "Membre seed introuvable")
+        await db.players.update_one({"id": member_id}, {"$set": {"team_id": None}})
+        event_name = "team_member_removed" if not is_admin_email(user.get("email")) else "team_admin_member_removed"
+        await journal(event_name, user["id"], {"team_id": team_id, "member_id": member_id, "source": "seed"})
+    else:
+        member = await db.users.find_one({"id": member_id, "team_id": team_id}, {"_id": 0})
+        if not member:
+            raise HTTPException(404, "Membre introuvable")
+        if member["id"] == user["id"]:
+            raise HTTPException(400, "Utilisez l'action quitter l'equipe pour vous retirer")
+        if team.get("captain_user_id") == member_id:
+            raise HTTPException(400, "Transferez d'abord le capitanat avant de retirer ce membre")
+        await db.users.update_one(
+            {"id": member_id},
+            {"$set": {"team_id": None, "team_role": None, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        event_name = "team_member_removed" if not is_admin_email(user.get("email")) else "team_admin_member_removed"
+        await journal(event_name, user["id"], {"team_id": team_id, "member_id": member_id, "source": "user"})
+
+    updated = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    return await _team_public(updated, include_members=True)
+
+
 @api_router.get("/admin/teams", dependencies=[Depends(get_admin_user)])
 async def admin_list_teams():
     docs = await db.teams.find({}, {"_id": 0}).sort("elo", -1).to_list(200)
@@ -2689,8 +2779,11 @@ async def admin_list_rewards():
 
 
 @api_router.get("/admin/rewards/redemptions", dependencies=[Depends(get_admin_user)])
-async def admin_list_reward_redemptions():
-    return await db.reward_redemptions.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+async def admin_list_reward_redemptions(status_f: Optional[str] = None):
+    query = {}
+    if status_f:
+        query["status"] = status_f
+    return await db.reward_redemptions.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
 @api_router.post("/admin/rewards", dependencies=[Depends(get_admin_user)])
@@ -2891,14 +2984,16 @@ class RegisterTournamentReq(BaseModel):
 
 @api_router.post("/tournaments/{tid}/register", dependencies=[Depends(get_current_user)])
 async def register_tournament(tid: str, req: RegisterTournamentReq, user=Depends(get_current_user)):
-    t = await db.tournaments.find_one({"id": tid})
+    t = await db.tournaments.find_one({"id": tid}, {"_id": 0})
     if not t:
         raise HTTPException(404, "Tournoi introuvable")
     if t["status"] not in ("open", "registering"):
         raise HTTPException(400, f"Inscriptions fermées (statut : {t['status']})")
-    if t.get("registered", 0) >= t.get("capacity", 0):
-        raise HTTPException(400, "Tournoi complet")
-    if await db.tournament_registrations.find_one({"tournament_id": tid, "user_id": user["id"]}):
+    capacity = int(t.get("capacity", 0) or 0)
+    current_regs = await db.tournament_registrations.find({"tournament_id": tid}, {"_id": 0}).sort("created_at", 1).to_list(300)
+    effective_regs = list(current_regs)
+    removed_solo_reg_ids: list[str] = []
+    if req.entity_type == "solo" and await db.tournament_registrations.find_one({"tournament_id": tid, "user_id": user["id"]}):
         raise HTTPException(409, "Déjà inscrit à ce tournoi")
 
     entity_id = req.entity_id
@@ -2914,16 +3009,50 @@ async def register_tournament(tid: str, req: RegisterTournamentReq, user=Depends
             raise HTTPException(403, "Seul le capitaine peut inscrire l'equipe")
         if await db.tournament_registrations.find_one({"tournament_id": tid, "entity_type": "team", "entity_id": team_id}, {"_id": 0, "id": 1}):
             raise HTTPException(409, "Cette equipe est deja inscrite au tournoi")
+        team_user_docs = await db.users.find({"team_id": team_id}, {"_id": 0, "id": 1}).to_list(20)
+        team_user_ids = [member["id"] for member in team_user_docs if member.get("id")]
+        blocked_user_ids = {str(member_id) for member_id in team_user_ids}
+        effective_regs = filter_solo_registrations_for_user_ids(current_regs, team_user_ids)
+        removed_solo_reg_ids = [
+            reg["id"]
+            for reg in current_regs
+            if reg.get("entity_type") == "solo" and str(reg.get("user_id") or "") in blocked_user_ids
+        ]
+        summary_before_insert = summarize_tournament_registrations_from_regs(capacity, effective_regs)
+        if summary_before_insert["team_slots_remaining"] <= 0:
+            raise HTTPException(400, "Tournoi complet")
         entity_id = team_id
         entity_name = team["name"]
+    else:
+        if user.get("team_id"):
+            existing_team_reg = await db.tournament_registrations.find_one(
+                {"tournament_id": tid, "entity_type": "team", "entity_id": user["team_id"]},
+                {"_id": 0, "id": 1},
+            )
+            if existing_team_reg:
+                raise HTTPException(409, "Votre equipe est deja inscrite a ce tournoi")
+        summary_before_insert = summarize_tournament_registrations_from_regs(capacity, current_regs)
+        if summary_before_insert["solo_slots_remaining"] <= 0:
+            raise HTTPException(400, "File solo complete pour ce tournoi")
 
+    now_iso = datetime.now(timezone.utc).isoformat()
     reg = {"id": str(uuid.uuid4()), "tournament_id": tid, "user_id": user["id"],
            "entity_type": req.entity_type, "entity_id": entity_id,
-           "entity_name": entity_name, "created_at": datetime.now(timezone.utc).isoformat()}
+           "entity_name": entity_name, "created_at": now_iso}
+    if removed_solo_reg_ids:
+        await db.tournament_registrations.delete_many({"id": {"$in": removed_solo_reg_ids}})
     await db.tournament_registrations.insert_one(reg)
     new_status = "registering" if t["status"] == "open" else t["status"]
-    await db.tournaments.update_one({"id": tid}, {"$inc": {"registered": 1}, "$set": {"status": new_status}})
-    await journal("tournament_registered", user["id"], {"tournament_id": tid, "entity": req.entity_name})
+    updated_summary = summarize_tournament_registrations_from_regs(capacity, [*effective_regs, reg])
+    await db.tournaments.update_one(
+        {"id": tid},
+        {"$set": {"registered": updated_summary["registered_effective"], "status": new_status, "updated_at": now_iso}},
+    )
+    await journal(
+        "tournament_registered",
+        user["id"],
+        {"tournament_id": tid, "entity": entity_name, "converted_solo_registrations": len(removed_solo_reg_ids)},
+    )
     return _clean(reg)
 
 @api_router.get("/tournaments/{tid}/registrations")
@@ -2943,12 +3072,33 @@ async def transition_tournament(tid: str, req: TransitionReq, user=Depends(get_a
         raise HTTPException(400, f"État inconnu. Choix : {TOURNAMENT_STATES}")
     if req.to not in ALLOWED_TRANSITIONS.get(cur, []):
         raise HTTPException(409, f"Transition {cur} → {req.to} interdite")
+    if req.to in {"starting", "live"}:
+        await _ensure_tournament_can_start({k: v for k, v in t.items() if k != "_id"})
     await db.tournaments.update_one({"id": tid}, {"$set": {"status": req.to, "status_changed_at": datetime.now(timezone.utc).isoformat()}})
     await journal("tournament_transition", user["id"], {"tournament_id": tid, "from": cur, "to": req.to})
     if req.to == "starting":
         # Auto-go-live 30s after seeding/starting via the Redis job queue
         await rs.schedule_job(time.time() + 30, {"type": "tournament_transition", "tournament_id": tid, "to": "live", "from": "starting"})
+    elif req.to == "live":
+        await _kickoff_tournament_runtime(tid, user["id"])
     return {"id": tid, "from": cur, "to": req.to, "allowed_next": ALLOWED_TRANSITIONS[req.to]}
+
+
+@api_router.post("/tournaments/{tid}/runtime/kickoff", dependencies=[Depends(get_admin_user)])
+async def kickoff_tournament_runtime(tid: str, user=Depends(get_admin_user)):
+    tournament = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not tournament:
+        raise HTTPException(404, "Tournoi introuvable")
+    if tournament.get("status") not in {"starting", "live"}:
+        raise HTTPException(409, "Le runtime CS2 ne peut etre relance que pour un tournoi en lancement ou en direct")
+    result = await _kickoff_tournament_runtime(tid, user["id"])
+    return {
+        "ok": True,
+        "tournament_id": tid,
+        "status": result.get("tournament_status"),
+        "bracket_created": bool(result.get("bracket_created")),
+        "launched_matches": result.get("launched_matches", []),
+    }
 
 @api_router.get("/stats/global")
 async def global_stats():
@@ -3345,6 +3495,18 @@ async def countdown_task(tid: str):
                     await hub.broadcast(tid, {"type": "event", "time": label, "msg": msg})
                     fired.add(mark)
             if remaining <= 0:
+                try:
+                    await _kickoff_tournament_runtime(tid)
+                except HTTPException as exc:
+                    logger.warning("tournament kickoff blocked for %s: %s", tid, exc.detail)
+                    await hub.broadcast(tid, {"type": "error", "code": "kickoff_blocked", "msg": str(exc.detail)})
+                    await rs.del_countdown(tid)
+                    return
+                except Exception as exc:
+                    logger.exception("tournament kickoff failed for %s", tid)
+                    await hub.broadcast(tid, {"type": "error", "code": "kickoff_failed", "msg": f"Lancement tournoi impossible: {exc}"})
+                    await rs.del_countdown(tid)
+                    return
                 await hub.broadcast(tid, {"type": "go", "msg": "Le tournoi commence !"})
                 await rs.del_countdown(tid)
                 return
@@ -3381,10 +3543,25 @@ async def ws_waiting_room(ws: WebSocket, tid: str, token: str = Query(None)):
         while True:
             data = await ws.receive_json()
             if data.get("action") == "start_countdown":
+                if not is_admin_email(user.get("email")):
+                    await ws.send_json({"type": "error", "code": "forbidden", "msg": "Seul un admin peut lancer le decompte tournoi."})
+                    continue
+                tournament = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+                if not tournament:
+                    await ws.send_json({"type": "error", "code": "not_found", "msg": "Tournoi introuvable."})
+                    continue
+                try:
+                    await _ensure_tournament_can_start(tournament)
+                except HTTPException as exc:
+                    await ws.send_json({"type": "error", "code": "not_ready", "msg": str(exc.detail)})
+                    continue
                 started = await start_countdown(tid, int(data.get("from", 30)), user["pseudo"])
                 if started:
                     await hub.broadcast(tid, {"type": "event", "time": datetime.now(timezone.utc).strftime("%H:%M:%S"), "msg": f"{user['pseudo']} a lancé le décompte"})
             elif data.get("action") == "ready":
+                if str(user.get("id") or "").startswith("guest_"):
+                    await ws.send_json({"type": "error", "code": "auth_required", "msg": "Connectez-vous pour confirmer votre presence."})
+                    continue
                 await hub.broadcast(tid, {"type": "event", "time": datetime.now(timezone.utc).strftime("%H:%M:%S"), "msg": f"{user['pseudo']} est prêt"})
             elif data.get("action") == "chat":
                 await hub.broadcast(tid, {"type": "chat", "from": user["pseudo"], "msg": str(data.get("msg",""))[:200], "at": datetime.now(timezone.utc).strftime("%H:%M:%S")})
@@ -3898,10 +4075,12 @@ async def create_bridge_match_report(req: BridgeMatchReportReq, authorization: O
 
 
 @api_router.get("/admin/matches/reports", dependencies=[Depends(get_admin_user)])
-async def admin_list_match_reports(status_f: Optional[str] = None, limit: int = 100):
+async def admin_list_match_reports(status_f: Optional[str] = None, source_f: Optional[str] = None, limit: int = 100):
     query = {}
     if status_f:
         query["status"] = status_f
+    if source_f:
+        query["source"] = source_f
     safe_limit = max(1, min(limit, 300))
     return await db.match_reports.find(query, {"_id": 0}).sort("created_at", -1).to_list(safe_limit)
 
@@ -3936,8 +4115,8 @@ class CardReq(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
     match_id: Optional[str] = None
 
-@cards_router.post("", dependencies=[Depends(get_current_user)])
-async def issue_card(req: CardReq, issuer=Depends(get_current_user)):
+@cards_router.post("", dependencies=[Depends(get_admin_user)])
+async def issue_card(req: CardReq, issuer=Depends(get_admin_user)):
     if req.severity not in ("yellow", "red"):
         raise HTTPException(400, "severity must be 'yellow' or 'red'")
     target = await db.users.find_one({"id": req.target_user_id}, {"_id": 0, "password_hash": 0})
@@ -3956,7 +4135,7 @@ async def issue_card(req: CardReq, issuer=Depends(get_current_user)):
         await journal("card_auto_escalated", None, {"target": req.target_user_id, "yellows": 3})
     return {"card": {k: v for k, v in card.items() if k != "_id"}, "auto_red_triggered": auto_red is not None}
 
-@cards_router.get("")
+@cards_router.get("", dependencies=[Depends(get_admin_user)])
 async def list_cards(target_user_id: Optional[str] = None, severity: Optional[str] = None, status_f: Optional[str] = None):
     q = {}
     if target_user_id: q["target_user_id"] = target_user_id
@@ -3965,8 +4144,8 @@ async def list_cards(target_user_id: Optional[str] = None, severity: Optional[st
     docs = await db.cards.find(q, {"_id": 0}).sort("created_at", -1).to_list(100)
     return docs
 
-@cards_router.post("/{card_id}/revoke", dependencies=[Depends(get_current_user)])
-async def revoke_card(card_id: str, mod=Depends(get_current_user)):
+@cards_router.post("/{card_id}/revoke", dependencies=[Depends(get_admin_user)])
+async def revoke_card(card_id: str, mod=Depends(get_admin_user)):
     r = await db.cards.update_one({"id": card_id, "status": "active"}, {"$set": {"status": "revoked", "revoked_by": mod["id"], "revoked_at": datetime.now(timezone.utc).isoformat()}})
     if r.modified_count == 0: raise HTTPException(404, "Carton introuvable ou déjà levé")
     await journal("card_revoked", mod["id"], {"card_id": card_id})
@@ -4479,7 +4658,15 @@ async def report_result(duel_id: str, req: DuelResultReq, reporter=Depends(get_c
 app.include_router(cards_router)
 app.include_router(duels_router)
 app.include_router(build_cs2_router(db, get_current_user, get_admin_user, journal))
-app.include_router(build_bracket_router(db, get_admin_user, journal))
+app.include_router(
+    build_bracket_router(
+        db,
+        get_admin_user,
+        journal,
+        entrants_loader=_load_tournament_bracket_entrants,
+        on_result_applied=_after_manual_bracket_result,
+    )
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -4498,9 +4685,12 @@ async def _scheduler_loop():
             for job in await rs.pop_due_jobs(time.time()):
                 if job.get("type") == "tournament_transition":
                     tid = job["tournament_id"]
-                    t = await db.tournaments.find_one({"id": tid})
+                    t = await db.tournaments.find_one({"id": tid}, {"_id": 0})
                     if t and t["status"] == job.get("from"):
-                        await db.tournaments.update_one({"id": tid}, {"$set": {"status": job["to"], "status_changed_at": datetime.now(timezone.utc).isoformat()}})
+                        if job["to"] == "live":
+                            await _kickoff_tournament_runtime(tid)
+                        else:
+                            await db.tournaments.update_one({"id": tid}, {"$set": {"status": job["to"], "status_changed_at": datetime.now(timezone.utc).isoformat()}})
                         await journal("tournament_auto_transition", None, {"tournament_id": tid, "to": job["to"]})
         except Exception as e:
             logger.warning(f"scheduler error: {e}")
