@@ -39,6 +39,12 @@ const NavBar = () => {
   const loc = useLocation();
   const { user } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const primaryQuickLinks = [
+    { to: "/tournaments", label: "Tournois", icon: Trophy },
+    { to: "/fun-5v5", label: "Fun 5v5", icon: Gamepad2 },
+    { to: "/rankings", label: "Classement", icon: Award },
+    { to: "/live", label: "En direct", icon: Radio },
+  ];
   const menuLinks = [
     { to: "/", label: "Accueil", icon: Flame },
     { to: "/tournaments", label: "Tournois", icon: Trophy },
@@ -109,6 +115,23 @@ const NavBar = () => {
                 </div>
               </div>
             )}
+          </div>
+          <div className="hidden xl:flex items-center gap-2 ml-1">
+            {primaryQuickLinks.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-display uppercase tracking-widest transition-all ${
+                  loc.pathname === item.to
+                    ? "border-cyan-neon/50 bg-cyan-neon/10 text-cyan-neon shadow-[0_0_18px_rgba(0,240,255,0.15)]"
+                    : "border-white/10 text-white/70 hover:border-white/20 hover:bg-white/5 hover:text-white"
+                }`}
+                data-testid={`nav-quick-${item.label.toLowerCase().replace(/\s/g, "-")}`}
+              >
+                <item.icon size={13}/>
+                {item.label}
+              </Link>
+            ))}
           </div>
           <a
             href={DISCORD_URL}
