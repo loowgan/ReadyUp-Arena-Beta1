@@ -14,8 +14,10 @@ from cs2 import (
     apply_matchzy_bracket_result,
     apply_matchzy_duel_result,
     auto_launch_ready_bracket_matches,
+    auto_launch_ready_fun_matches,
     build_live_matches_snapshot,
     extract_matchzy_winner_team,
+    launch_fun_match_on_server,
     launch_bracket_match_on_server,
     public_server_payload,
 )
@@ -129,6 +131,7 @@ class FakeDB:
         self.tournament_registrations = FakeCollection(collections.get("tournament_registrations"))
         self.tournaments = FakeCollection(collections.get("tournaments"))
         self.teams = FakeCollection(collections.get("teams"))
+        self.fun_matches = FakeCollection(collections.get("fun_matches"))
 
 
 def _run(coro):
@@ -572,3 +575,176 @@ def test_auto_launch_ready_bracket_matches_supports_auto_solo_rosters(monkeypatc
     assert config_doc["config"]["team1"]["players"] == {"76561111111111121": "SoloOne"}
     assert config_doc["config"]["team2"]["players"] == {"76561111111111122": "BetaCap"}
     assert saved_match["launch_status"] == "launch_pending"
+
+
+def test_launch_fun_match_on_server_queues_matchzy_and_updates_lobby(monkeypatch):
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.readyup.test")
+    monkeypatch.delenv("MATCHZY_WEBHOOK_SECRET", raising=False)
+    monkeypatch.delenv("MATCHZY_CONFIG_TOKEN", raising=False)
+
+    players = [
+        {
+            "user_id": f"user-{index}",
+            "pseudo": f"Player{index}",
+            "steam_id": f"76561111111111{200 + index}",
+            "elo": 1800 - (index * 20),
+            "kdr": 1.0,
+            "reliability": 60,
+            "joined_at": f"2026-06-20T12:{index:02d}:00+00:00",
+        }
+        for index in range(10)
+    ]
+    db = FakeDB(
+        fun_matches=[
+            {
+                "id": "fun-1",
+                "title": "Night Mix",
+                "description": "Ready lobby",
+                "map": "de_mirage",
+                "creator_id": "user-0",
+                "creator_pseudo": "Player0",
+                "status": "ready",
+                "players": players,
+                "created_at": "2026-06-20T12:00:00+00:00",
+                "updated_at": "2026-06-20T12:00:00+00:00",
+            }
+        ],
+        cs2_servers=[
+            {
+                "id": "srv-fun-1",
+                "name": "Arena Fun #1",
+                "host": "185.245.99.120",
+                "public_host": "185.245.99.120",
+                "port": 30060,
+                "game_port": 30060,
+                "status": "online",
+                "current_match_id": None,
+                "matchzy_enabled": True,
+                "bridge_token_hash": "token-hash",
+            }
+        ],
+    )
+    journal_calls = []
+
+    async def journal(event_type, user_id, meta):
+        journal_calls.append((event_type, user_id, meta))
+
+    launched = _run(
+        launch_fun_match_on_server(
+            db,
+            journal,
+            "fun-1",
+            "srv-fun-1",
+            created_by="user-0",
+        )
+    )
+
+    lobby = _run(db.fun_matches.find_one({"id": "fun-1"}))
+    server = _run(db.cs2_servers.find_one({"id": "srv-fun-1"}))
+    config_doc = _run(db.matchzy_match_configs.find_one({"fun_match_id": "fun-1"}))
+    queued_command = _run(db.cs2_bridge_commands.find_one({"server_id": "srv-fun-1"}))
+
+    assert launched["queued"] is True
+    assert launched["fun_match_id"] == "fun-1"
+    assert lobby["status"] == "launch_pending"
+    assert lobby["server_id"] == "srv-fun-1"
+    assert lobby["match_room_url"] == "/match/fun-1"
+    assert server["current_match_id"] == "fun-1"
+    assert server["current_fun_match_id"] == "fun-1"
+    assert config_doc["config"]["maplist"] == ["de_mirage"]
+    assert len(config_doc["config"]["team1"]["players"]) == 5
+    assert len(config_doc["config"]["team2"]["players"]) == 5
+    assert queued_command["kind"] == "launch_fun_match"
+    assert journal_calls and journal_calls[0][0] == "cs2_fun_match_launched"
+
+
+def test_apply_matchzy_runtime_state_updates_fun_match_lifecycle():
+    db = FakeDB(
+        cs2_servers=[
+            {
+                "id": "srv-fun-1",
+                "name": "Arena Fun #1",
+                "status": "launch_pending",
+                "current_match_id": "fun-rt",
+                "last_match_id": "fun-rt",
+                "current_fun_match_id": "fun-rt",
+            }
+        ],
+        fun_matches=[
+            {
+                "id": "fun-rt",
+                "title": "Night Mix",
+                "status": "launch_pending",
+                "launch_status": "launch_pending",
+            }
+        ],
+    )
+
+    _run(_apply_matchzy_runtime_state(db, "fun-rt", {"event": "series_start", "matchid": "fun-rt", "map_name": "de_nuke"}))
+    fun_live = _run(db.fun_matches.find_one({"id": "fun-rt"}))
+    server_live = _run(db.cs2_servers.find_one({"id": "srv-fun-1"}))
+
+    assert fun_live["status"] == "live"
+    assert fun_live["launch_status"] == "live"
+    assert fun_live["current_map"] == "de_nuke"
+    assert server_live["status"] == "live"
+
+    _run(_apply_matchzy_runtime_state(db, "fun-rt", {"event": "series_end", "matchid": "fun-rt", "team1": {"score": 13}, "team2": {"score": 9}}))
+    fun_done = _run(db.fun_matches.find_one({"id": "fun-rt"}))
+    server_done = _run(db.cs2_servers.find_one({"id": "srv-fun-1"}))
+
+    assert fun_done["status"] == "closed"
+    assert fun_done["launch_status"] == "finished"
+    assert fun_done["series_score"] == {"team1": 13, "team2": 9}
+    assert fun_done["closed_at"]
+    assert server_done["status"] == "online"
+    assert server_done["current_match_id"] is None
+
+
+def test_auto_launch_ready_fun_matches_marks_waiting_when_no_server_available():
+    db = FakeDB(
+        fun_matches=[
+            {
+                "id": "fun-wait",
+                "title": "Queued Mix",
+                "description": "",
+                "map": "de_inferno",
+                "creator_id": "u-1",
+                "creator_pseudo": "Alpha",
+                "status": "ready",
+                "players": [
+                    {
+                        "user_id": f"user-{index}",
+                        "pseudo": f"Player{index}",
+                        "steam_id": f"76561111111112{300 + index}",
+                        "elo": 1600,
+                        "kdr": 1.0,
+                        "reliability": 55,
+                        "joined_at": f"2026-06-21T10:{index:02d}:00+00:00",
+                    }
+                    for index in range(10)
+                ],
+                "created_at": "2026-06-21T10:00:00+00:00",
+                "updated_at": "2026-06-21T10:00:00+00:00",
+            }
+        ],
+        cs2_servers=[
+            {
+                "id": "srv-busy",
+                "name": "Busy Server",
+                "status": "live",
+                "current_match_id": "other-match",
+                "matchzy_enabled": True,
+            }
+        ],
+    )
+
+    async def journal(_event_type, _user_id, _meta):
+        return None
+
+    launched = _run(auto_launch_ready_fun_matches(db, journal))
+    lobby = _run(db.fun_matches.find_one({"id": "fun-wait"}))
+
+    assert launched == []
+    assert lobby["status"] == "ready"
+    assert lobby["launch_status"] == "waiting_server"

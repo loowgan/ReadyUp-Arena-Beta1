@@ -51,7 +51,9 @@ db = client[db_name]
 import redis_state as rs
 from seed_data import seed_all
 from cs2 import (
+    auto_launch_ready_fun_matches,
     auto_launch_ready_bracket_matches,
+    auto_launch_live_tournament_matches,
     backend_public_base,
     build_live_matches_snapshot,
     build_cs2_router,
@@ -839,6 +841,7 @@ async def my_audit(user=Depends(get_current_user)):
 # ---------- Password reset (Resend email) ----------
 class ForgotReq(BaseModel):
     email: EmailStr
+    origin: Optional[str] = None
 
 class ResetReq(BaseModel):
     token: str
@@ -854,7 +857,8 @@ async def forgot_password(req: ForgotReq):
             "id": token, "user_id": user["id"], "used": False,
             "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat()})
-        reset_url = f"{_frontend_base()}/reset-password?token={token}"
+        frontend_base = _public_origin(req.origin) or _frontend_base()
+        reset_url = f"{frontend_base}/reset-password?token={token}"
         try:
             await send_email(user["email"], "ReadyUp Arena — Réinitialisation du mot de passe",
                              reset_email_html(user["pseudo"], reset_url))
@@ -879,23 +883,41 @@ async def reset_password(req: ResetReq):
 # ---------- Feature flags / config ----------
 @api_router.get("/config")
 async def get_config():
+    steam_enabled = env_flag("FEATURE_STEAM_AUTH", True)
     stripe_enabled = env_flag("FEATURE_STRIPE_DONATIONS", True) and bool(STRIPE_API_KEY)
     twitch_enabled = env_flag("FEATURE_TWITCH", True)
     twitch_ready = bool(env_text("TWITCH_CLIENT_ID") and env_text("TWITCH_CLIENT_SECRET"))
-    backend_public_url = env_text("BACKEND_PUBLIC_URL")
+    backend_public_url = _public_origin(env_text("BACKEND_PUBLIC_URL"))
+    frontend_public_url = _public_origin(env_text("FRONTEND_URL"))
+    cors_origins = _cors_origins()
     matchzy_webhook_ready = bool(env_text("MATCHZY_WEBHOOK_SECRET"))
     matchzy_config_ready = bool(env_text("MATCHZY_CONFIG_TOKEN"))
     email_ready = bool(env_text("RESEND_API_KEY") and env_text("SENDER_EMAIL"))
+    password_reset_ready = email_ready and bool(frontend_public_url)
     return {
         "app_name": "ReadyUp Arena",
         "tagline": "Formez votre équipe. Entrez dans l'arène. Devenez champion.",
-        "feature_steam_auth": env_flag("FEATURE_STEAM_AUTH", True),
+        "feature_steam_auth": steam_enabled,
         "feature_twitch": twitch_enabled,
         "feature_stripe": stripe_enabled,
         "feature_paypal": env_flag("FEATURE_PAYPAL", True),
         "feature_csstats": env_flag("FEATURE_CSSTATS", True),
         "twitch_channel": os.environ.get("TWITCH_CHANNEL", "esl_csgo"),
+        "public_urls": {
+            "frontend": frontend_public_url,
+            "backend": backend_public_url,
+        },
         "integrations": {
+            "steam_auth": {
+                "enabled": steam_enabled,
+                "backend_public_url_configured": bool(backend_public_url),
+                "frontend_public_url_configured": bool(frontend_public_url),
+                "password_reset_ready": password_reset_ready,
+            },
+            "cors": {
+                "configured_origins": cors_origins,
+                "frontend_allowed": bool(frontend_public_url and frontend_public_url in cors_origins),
+            },
             "twitch": {
                 "enabled": twitch_enabled,
                 "configured": twitch_ready,
@@ -908,6 +930,7 @@ async def get_config():
             },
             "email": {
                 "configured": email_ready,
+                "password_reset_ready": password_reset_ready,
             },
         },
     }
@@ -990,6 +1013,85 @@ def _active_announcement(doc: dict, now_iso: str) -> bool:
     if ends_at and ends_at < now_iso:
         return False
     return True
+
+
+async def _build_admin_overview(database, now_iso: Optional[str] = None) -> dict:
+    now_iso = now_iso or datetime.now(timezone.utc).isoformat()
+
+    cards = await database.cards.find({"status": "active"}, {"_id": 0, "severity": 1}).to_list(500)
+    reports = await database.match_reports.find(
+        {"status": {"$in": ["open", "acknowledged"]}},
+        {"_id": 0, "status": 1, "source": 1},
+    ).to_list(500)
+    tournaments = await database.tournaments.find({}, {"_id": 0, "status": 1}).to_list(200)
+    fun_matches = await database.fun_matches.find({}, {"_id": 0, "status": 1}).to_list(200)
+    announcements = await database.announcements.find({}, {"_id": 0}).to_list(200)
+    contests = await database.contests.find({}, {"_id": 0}).to_list(200)
+    rewards = await database.rewards.find({}, {"_id": 0, "is_active": 1}).to_list(200)
+    redemptions = await database.reward_redemptions.find({}, {"_id": 0, "status": 1}).to_list(500)
+    news = await database.news.find({}, {"_id": 0, "date": 1}).to_list(200)
+
+    users_total = await database.users.count_documents({})
+    teams_total = await database.teams.count_documents({})
+    duels_active = await database.duels.count_documents({"status": {"$in": list(DUEL_ACTIVE_STATUSES)}})
+
+    cards_yellow = sum(1 for item in cards if item.get("severity") == "yellow")
+    cards_red = sum(1 for item in cards if item.get("severity") == "red")
+    reports_open = sum(1 for item in reports if item.get("status") == "open")
+    reports_acknowledged = sum(1 for item in reports if item.get("status") == "acknowledged")
+    reports_from_cs2 = sum(1 for item in reports if item.get("source") == "cs2_chat")
+
+    tournaments_live = sum(1 for item in tournaments if item.get("status") == "live")
+    tournaments_active = sum(1 for item in tournaments if item.get("status") not in {"closed"})
+    fun_matches_open = sum(1 for item in fun_matches if item.get("status") == "open")
+    fun_matches_ready = sum(1 for item in fun_matches if item.get("status") == "ready")
+    fun_matches_waiting_server = sum(1 for item in fun_matches if item.get("status") == "waiting_server")
+    fun_matches_live = sum(1 for item in fun_matches if item.get("status") == "live")
+
+    announcements_live = sum(1 for item in announcements if _active_announcement(item, now_iso))
+    contests_live = sum(1 for item in contests if _active_announcement(item, now_iso))
+    news_scheduled = sum(1 for item in news if str(item.get("date") or "") > now_iso)
+    rewards_active = sum(1 for item in rewards if item.get("is_active"))
+    redemptions_pending = sum(1 for item in redemptions if item.get("status") == "pending")
+
+    return {
+        "moderation": {
+            "cards_active": len(cards),
+            "cards_yellow": cards_yellow,
+            "cards_red": cards_red,
+            "reports_open": reports_open,
+            "reports_acknowledged": reports_acknowledged,
+            "reports_from_cs2": reports_from_cs2,
+        },
+        "content": {
+            "news_total": len(news),
+            "news_scheduled": news_scheduled,
+            "news_published": max(len(news) - news_scheduled, 0),
+            "announcements_total": len(announcements),
+            "announcements_live": announcements_live,
+            "contests_total": len(contests),
+            "contests_live": contests_live,
+        },
+        "community": {
+            "users_total": users_total,
+            "teams_total": teams_total,
+        },
+        "store": {
+            "rewards_total": len(rewards),
+            "rewards_active": rewards_active,
+            "redemptions_pending": redemptions_pending,
+        },
+        "competition": {
+            "tournaments_active": tournaments_active,
+            "tournaments_live": tournaments_live,
+            "duels_active": duels_active,
+            "fun_matches_open": fun_matches_open,
+            "fun_matches_ready": fun_matches_ready,
+            "fun_matches_waiting_server": fun_matches_waiting_server,
+            "fun_matches_live": fun_matches_live,
+        },
+        "generated_at": now_iso,
+    }
 
 
 def _remaining_slots(max_entries: Optional[int], current_entries: int) -> Optional[int]:
@@ -1206,7 +1308,8 @@ async def _kickoff_tournament_runtime(tid: str, actor_user_id: Optional[str] = N
 
 
 async def _after_manual_bracket_result(tid: str, _match_id: str, bracket_doc: dict) -> Optional[dict]:
-    await auto_launch_ready_bracket_matches(db, journal, tid)
+    await auto_launch_live_tournament_matches(db, journal)
+    await auto_launch_ready_fun_matches(db, journal)
     refreshed = await db.brackets.find_one({"tournament_id": tid}, {"_id": 0})
     return refreshed or bracket_doc
 
@@ -1969,7 +2072,7 @@ async def _get_fun_match_or_404(match_id: str) -> dict:
 
 
 async def _ensure_user_not_in_other_fun_match(user_id: str, exclude_match_id: Optional[str] = None) -> None:
-    docs = await db.fun_matches.find({"status": {"$in": ["open", "ready", "live"]}}, {"_id": 0, "id": 1, "players": 1}).to_list(200)
+    docs = await db.fun_matches.find({"status": {"$in": ["open", "ready", "launch_pending", "live", "launch_failed"]}}, {"_id": 0, "id": 1, "players": 1}).to_list(200)
     for doc in docs:
         if exclude_match_id and str(doc.get("id")) == str(exclude_match_id):
             continue
@@ -2339,6 +2442,24 @@ async def get_fun_match(match_id: str):
     return summarize_fun_match(await _get_fun_match_or_404(match_id))
 
 
+@api_router.get("/fun-matches/{match_id}/matchzy-config")
+async def get_fun_match_matchzy_config(
+    match_id: str,
+    authorization: Optional[str] = Header(default=None),
+    x_matchzy_token: Optional[str] = Header(default=None),
+):
+    header_name, header_value = matchzy_config_header()
+    if header_value:
+        expected_token = header_value.replace("Bearer ", "", 1)
+        provided_token = (authorization or "").replace("Bearer ", "", 1) or (x_matchzy_token or "")
+        if not secrets.compare_digest(provided_token, expected_token):
+            raise HTTPException(401, "Config MatchZy non autorisee")
+    doc = await db.matchzy_match_configs.find_one({"fun_match_id": match_id}, {"_id": 0, "config": 1})
+    if not doc:
+        raise HTTPException(404, "Configuration match fun introuvable")
+    return doc["config"]
+
+
 @api_router.post("/fun-matches", dependencies=[Depends(get_current_user)])
 async def create_fun_match(req: FunMatchCreateReq, user=Depends(get_current_user)):
     if not _has_steam_ready(user):
@@ -2383,6 +2504,8 @@ async def join_fun_match(match_id: str, user=Depends(get_current_user)):
     }
     await db.fun_matches.update_one({"id": match_id}, {"$set": updates})
     await journal("fun_match_joined", user["id"], {"match_id": match_id})
+    if updates["status"] == "ready":
+        await auto_launch_ready_fun_matches(db, journal, created_by=user["id"], max_matches=1)
     updated = await db.fun_matches.find_one({"id": match_id}, {"_id": 0})
     return summarize_fun_match(updated)
 
@@ -2422,6 +2545,7 @@ async def rebalance_fun_match(match_id: str, user=Depends(get_current_user)):
         {"$set": {"status": "ready", "updated_at": datetime.now(timezone.utc).isoformat()}},
     )
     await journal("fun_match_rebalanced", user["id"], {"match_id": match_id})
+    await auto_launch_ready_fun_matches(db, journal, created_by=user["id"], max_matches=1)
     updated = await db.fun_matches.find_one({"id": match_id}, {"_id": 0})
     return summarize_fun_match(updated)
 
@@ -2577,6 +2701,11 @@ async def redeem_reward(reward_id: str, user=Depends(get_current_user)):
 @api_router.get("/admin/news", dependencies=[Depends(get_admin_user)])
 async def admin_list_news():
     return await db.news.find({}, {"_id": 0}).sort("date", -1).to_list(100)
+
+
+@api_router.get("/admin/overview", dependencies=[Depends(get_admin_user)])
+async def admin_overview():
+    return await _build_admin_overview(db)
 
 
 @api_router.post("/admin/news", dependencies=[Depends(get_admin_user)])
@@ -3157,8 +3286,16 @@ async def twitch_live():
 STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
 
 def _backend_base(request: Request) -> str:
-    # External URL for OpenID realm/return_to
-    return os.environ.get("BACKEND_PUBLIC_URL") or str(request.base_url).rstrip("/")
+    configured = _public_origin(env_text("BACKEND_PUBLIC_URL"))
+    if configured:
+        return configured
+
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip()
+    forwarded_host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    if forwarded_proto in {"http", "https"} and forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+    return str(request.base_url).rstrip("/")
 
 def _public_origin(value: Optional[str]) -> Optional[str]:
     raw = str(value or "").strip()
@@ -4629,6 +4766,8 @@ async def report_duel_result_manual(duel_id: str, req: DuelResultReq, reporter=D
     )
     if duel.get("server_id"):
         await _release_duel_server(duel["server_id"], duel_id)
+        await auto_launch_live_tournament_matches(db, journal, max_matches=1)
+        await auto_launch_ready_fun_matches(db, journal, max_matches=1)
     await journal("duel_closed_manual", reporter["id"], {"duel_id": duel_id, "winner": req.winner_id, "pot": pot})
     return {"ok": True, "winner_id": req.winner_id, "pot_awarded": pot}
 
@@ -4652,6 +4791,8 @@ async def report_result(duel_id: str, req: DuelResultReq, reporter=Depends(get_c
         }})
     if duel.get("server_id"):
         await _release_duel_server(duel["server_id"], duel_id)
+        await auto_launch_live_tournament_matches(db, journal, max_matches=1)
+        await auto_launch_ready_fun_matches(db, journal, max_matches=1)
     await journal("duel_closed", reporter["id"], {"duel_id": duel_id, "winner": req.winner_id, "pot": pot})
     return {"ok": True, "winner_id": req.winner_id, "pot_awarded": pot}
 
@@ -4764,6 +4905,8 @@ async def _startup():
         logger.warning("RCON_ENC_KEY is missing. RCON passwords will not be encrypted at rest.")
     if not env_text("BACKEND_PUBLIC_URL"):
         logger.warning("BACKEND_PUBLIC_URL is missing. Steam OpenID and MatchZy config URLs will be unreliable outside local development.")
+    if not env_text("FRONTEND_URL"):
+        logger.warning("FRONTEND_URL is missing. Password reset and frontend callback links may fall back to localhost outside explicit browser flows.")
     if not env_text("MATCHZY_WEBHOOK_SECRET"):
         logger.warning("MATCHZY_WEBHOOK_SECRET is missing. MatchZy webhook authentication is not secured.")
     if not env_text("MATCHZY_CONFIG_TOKEN"):

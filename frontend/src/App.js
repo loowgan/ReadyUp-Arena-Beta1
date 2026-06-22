@@ -4,7 +4,7 @@ import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 import { Flame, Trophy, Users, Swords, Radio, Shield, Zap, Crown, Target, AlertTriangle, Coins, Heart, ChevronRight, Play, Lock, CheckCircle2, Circle, Clock, Tv, ExternalLink, Star, TrendingUp, Award, Gamepad2, LogOut, User, Server, Terminal, Plus, Trash2, RefreshCw, Gift, ShoppingBag, Ticket, Package } from "lucide-react";
 import { AuthProvider, useAuth } from "./AuthContext";
-import { API, HEALTH_API, WS_BASE_URL } from "./lib/api";
+import { API, BACKEND_BASE_URL, HEALTH_API, WS_BASE_URL } from "./lib/api";
 
 const DISCORD_URL = process.env.REACT_APP_DISCORD_URL || "https://discord.gg/F6RxTWeSmE";
 const STEAM_GROUP_URL = process.env.REACT_APP_STEAM_GROUP_URL || "https://steamcommunity.com/groups/readyuparena";
@@ -1998,11 +1998,15 @@ const Profile = () => {
   }, [mergeToken, token]);
   const handleSteamLink = async () => {
     if (!token) {
-      window.location.href = `${API}/auth/steam/login?frontend_origin=${encodeURIComponent(window.location.origin)}`;
+      window.location.href = `${BACKEND_BASE_URL}/api/auth/steam/login?frontend_origin=${encodeURIComponent(window.location.origin)}`;
       return;
     }
     try {
-      const response = await axios.post(`${API}/auth/steam/link-session`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      const response = await axios.post(
+        `${BACKEND_BASE_URL}/api/auth/steam/link-session?frontend_origin=${encodeURIComponent(window.location.origin)}`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
       window.location.href = response.data.url;
     } catch (err) {
       setSyncError(err?.response?.data?.detail || "Lien Steam impossible pour le moment.");
@@ -2478,12 +2482,16 @@ const FunMatchesPage = () => {
     }
   };
 
-  const statusMeta = (status) => ({
-    open: { label: "Ouvert", variant: "soon" },
-    ready: { label: "Equipes pretes", variant: "verified" },
-    live: { label: "Live", variant: "live" },
-    closed: { label: "Ferme", variant: "offline" },
-  }[status] || { label: status || "Inconnu", variant: "offline" });
+  const statusMeta = (match) => {
+    if (match.status === "launch_pending") return { label: "Lancement", variant: "soon" };
+    if (match.status === "launch_failed") return { label: "Echec launch", variant: "offline" };
+    if (match.status === "live") return { label: "Live", variant: "live" };
+    if (match.status === "closed") return { label: "Ferme", variant: "offline" };
+    if (match.status === "ready" && match.launch_status === "waiting_server") return { label: "En file serveur", variant: "soon" };
+    if (match.status === "ready") return { label: "Equipes pretes", variant: "verified" };
+    if (match.status === "open") return { label: "Ouvert", variant: "soon" };
+    return { label: match.status || "Inconnu", variant: "offline" };
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="fun-matches-page">
@@ -2523,10 +2531,12 @@ const FunMatchesPage = () => {
       <div className="grid xl:grid-cols-2 gap-6">
         {matches.length === 0 && <div className="glass p-6 text-white/40">Aucun lobby fun actif pour le moment.</div>}
         {matches.map((match) => {
-          const meta = statusMeta(match.status);
+          const meta = statusMeta(match);
           const isOwner = user?.id === match.creator_id;
           const isParticipant = (match.players || []).some((player) => player.user_id === user?.id);
           const canManage = isOwner || user?.is_admin;
+          const lobbyMutable = ["open", "ready", "launch_failed"].includes(match.status);
+          const roomUrl = match.match_room_url || `/match/${match.id}`;
           return (
             <div key={match.id} className="glass p-6 border border-white/8" data-testid={`fun-match-${match.id}`}>
               <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -2544,6 +2554,27 @@ const FunMatchesPage = () => {
                 <div className="border border-white/8 p-3"><div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Places</div><div className="font-display text-xl mt-2">{match.slots_remaining}</div></div>
                 <div className="border border-white/8 p-3"><div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Createur</div><div className="text-sm mt-2 text-white/75">{match.creator_pseudo}</div></div>
               </div>
+
+              <div className="grid sm:grid-cols-3 gap-3 mt-3 text-sm">
+                <div className="border border-white/8 p-3">
+                  <div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Orchestration</div>
+                  <div className="mt-2 text-white/75">{match.launch_status || (match.status === "ready" ? "preparation auto" : "—")}</div>
+                </div>
+                <div className="border border-white/8 p-3">
+                  <div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Serveur</div>
+                  <div className="mt-2 text-white/75">{match.server_name || "Affectation automatique"}</div>
+                </div>
+                <div className="border border-white/8 p-3">
+                  <div className="text-[11px] uppercase tracking-[0.25em] text-white/35">Room</div>
+                  <div className="mt-2 text-white/75">{match.server_id ? "Disponible" : match.launch_status === "waiting_server" ? "En attente" : "Pas encore creee"}</div>
+                </div>
+              </div>
+
+              {match.launch_error && (
+                <div className="mt-3 text-sm text-red-300 border border-red-500/20 p-3">
+                  {match.launch_error}
+                </div>
+              )}
 
               <div className="mt-5 border border-white/8 p-4">
                 <div className="text-xs uppercase tracking-[0.3em] text-white/35">Joueurs inscrits</div>
@@ -2581,27 +2612,32 @@ const FunMatchesPage = () => {
               )}
 
               <div className="flex flex-wrap items-center gap-3 mt-5">
-                {token && !isParticipant && match.status !== "closed" && match.slots_remaining > 0 && (
+                {token && !isParticipant && lobbyMutable && match.slots_remaining > 0 && (
                   <button onClick={() => joinMatch(match.id)} disabled={busyKey === `join-${match.id}`} className="btn-neon">
                     <Users size={14}/>{busyKey === `join-${match.id}` ? "Connexion..." : "Rejoindre"}
                   </button>
                 )}
-                {token && isParticipant && match.status !== "closed" && (
+                {token && isParticipant && lobbyMutable && (
                   <button onClick={() => leaveMatch(match.id)} disabled={busyKey === `leave-${match.id}`} className="btn-ghost">
                     <Trash2 size={14}/>{busyKey === `leave-${match.id}` ? "Sortie..." : "Quitter"}
                   </button>
                 )}
-                {canManage && match.ready_to_start && match.status !== "closed" && (
+                {canManage && match.ready_to_start && ["ready", "launch_failed"].includes(match.status) && (
                   <button onClick={() => rebalanceMatch(match.id)} disabled={busyKey === `rebalance-${match.id}`} className="btn-ghost">
                     <RefreshCw size={14}/>{busyKey === `rebalance-${match.id}` ? "Equilibrage..." : "Reequilibrer"}
                   </button>
                 )}
-                {canManage && match.status !== "closed" && (
+                {(match.server_id || ["launch_pending", "live", "closed"].includes(match.status)) && (
+                  <Link to={roomUrl} className="btn-neon">
+                    <Radio size={14}/>Ouvrir la room
+                  </Link>
+                )}
+                {canManage && lobbyMutable && (
                   <button onClick={() => closeMatch(match.id)} disabled={busyKey === `close-${match.id}`} className="btn-ghost text-red-400">
                     <Lock size={14}/>{busyKey === `close-${match.id}` ? "Fermeture..." : "Fermer"}
                   </button>
                 )}
-                <div className="text-sm text-white/45">Auto-equilibrage a 10 joueurs. 1 compte = 1 lobby actif.</div>
+                <div className="text-sm text-white/45">Auto-equilibrage a 10 joueurs. Des qu'un serveur libre existe, MatchZy part automatiquement.</div>
               </div>
             </div>
           );
@@ -3268,12 +3304,14 @@ const ContactPage = () => (
 const StatusPage = () => {
   const [health, setHealth] = useState(null);
   const [stats, setStats] = useState(null);
+  const [config, setConfig] = useState(null);
 
   useEffect(() => {
     const load = async () => {
-      const [healthResult, statsResult] = await Promise.allSettled([
+      const [healthResult, statsResult, configResult] = await Promise.allSettled([
         axios.get(HEALTH_API),
         axios.get(`${API}/stats/global`),
+        axios.get(`${API}/config`),
       ]);
 
       if (healthResult.status === "fulfilled") {
@@ -3285,10 +3323,54 @@ const StatusPage = () => {
       if (statsResult.status === "fulfilled") {
         setStats(statsResult.value.data);
       }
+      if (configResult.status === "fulfilled") {
+        setConfig(configResult.value.data);
+      }
     };
 
     load();
   }, []);
+
+  const prodChecks = [
+    {
+      label: "Frontend public",
+      value: config?.public_urls?.frontend || "missing",
+      tone: config?.public_urls?.frontend ? "ok" : "warning",
+      detail: config?.public_urls?.frontend ? "URL publique frontend declaree" : "FRONTEND_URL absent",
+    },
+    {
+      label: "Backend public",
+      value: config?.public_urls?.backend || "missing",
+      tone: config?.public_urls?.backend ? "ok" : "warning",
+      detail: config?.public_urls?.backend ? "URL publique backend declaree" : "BACKEND_PUBLIC_URL absent",
+    },
+    {
+      label: "Steam auth",
+      value: config?.feature_steam_auth === false ? "disabled" : config?.integrations?.steam_auth?.backend_public_url_configured ? "ready" : "warning",
+      tone: config?.feature_steam_auth === false ? "neutral" : config?.integrations?.steam_auth?.backend_public_url_configured ? "ok" : "warning",
+      detail: config?.feature_steam_auth === false
+        ? "Feature desactivee"
+        : config?.integrations?.steam_auth?.backend_public_url_configured
+          ? "Handshake OpenID sur backend public"
+          : "Auth Steam possible, mais URL backend publique non forcee",
+    },
+    {
+      label: "Reset email",
+      value: config?.integrations?.email?.password_reset_ready ? "ready" : config?.integrations?.email?.configured ? "partial" : "disabled",
+      tone: config?.integrations?.email?.password_reset_ready ? "ok" : config?.integrations?.email?.configured ? "warning" : "neutral",
+      detail: config?.integrations?.email?.password_reset_ready
+        ? "Email + lien frontend publics ok"
+        : config?.integrations?.email?.configured
+          ? "Email actif, mais lien frontend public manquant"
+          : "Resend non configure",
+    },
+  ];
+
+  const toneClass = (tone) => {
+    if (tone === "ok") return "text-cyan-neon";
+    if (tone === "warning") return "text-yellow-neon";
+    return "text-white/60";
+  };
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-10" data-testid="status-page">
@@ -3322,6 +3404,18 @@ const StatusPage = () => {
           <div className="glass p-5"><div className="text-xs uppercase tracking-widest text-white/40">En ligne</div><div className="font-display text-3xl mt-2">{stats.online_now}</div></div>
         </div>
       )}
+      <div className="mt-10">
+        <div className="text-xs uppercase tracking-[0.3em] text-white/35">Configuration prod</div>
+        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mt-4">
+          {prodChecks.map((item) => (
+            <div key={item.label} className="glass p-5">
+              <div className="text-xs uppercase tracking-widest text-white/40">{item.label}</div>
+              <div className={`font-display text-2xl mt-3 break-all ${toneClass(item.tone)}`}>{item.value}</div>
+              <div className="text-xs text-white/45 mt-3">{item.detail}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 };
@@ -5400,25 +5494,119 @@ const MatchReportsAdmin = () => {
 };
 
 /* ============== ADMIN ============== */
+const ADMIN_SECTIONS = [
+  { id: "overview", label: "Pilotage", icon: Shield, accent: "text-cyan-neon" },
+  { id: "moderation", label: "Moderation", icon: AlertTriangle, accent: "text-red-400" },
+  { id: "tournaments", label: "Tournois", icon: Trophy, accent: "text-orange-400" },
+  { id: "teams", label: "Equipes", icon: Users, accent: "text-cyan-neon" },
+  { id: "content", label: "Contenu", icon: Zap, accent: "text-yellow-neon" },
+  { id: "store", label: "Boutique", icon: ShoppingBag, accent: "text-emerald-300" },
+  { id: "cs2", label: "CS2", icon: Server, accent: "text-white" },
+];
+
+const EMPTY_ADMIN_OVERVIEW = {
+  moderation: {
+    cards_active: 0,
+    cards_yellow: 0,
+    cards_red: 0,
+    reports_open: 0,
+    reports_acknowledged: 0,
+    reports_from_cs2: 0,
+  },
+  content: {
+    news_total: 0,
+    news_scheduled: 0,
+    news_published: 0,
+    announcements_total: 0,
+    announcements_live: 0,
+    contests_total: 0,
+    contests_live: 0,
+  },
+  community: {
+    users_total: 0,
+    teams_total: 0,
+  },
+  store: {
+    rewards_total: 0,
+    rewards_active: 0,
+    redemptions_pending: 0,
+  },
+  competition: {
+    tournaments_active: 0,
+    tournaments_live: 0,
+    duels_active: 0,
+    fun_matches_open: 0,
+    fun_matches_ready: 0,
+    fun_matches_waiting_server: 0,
+    fun_matches_live: 0,
+  },
+  generated_at: null,
+};
+
+const mergeAdminOverview = (payload) => ({
+  ...EMPTY_ADMIN_OVERVIEW,
+  ...(payload || {}),
+  moderation: { ...EMPTY_ADMIN_OVERVIEW.moderation, ...((payload || {}).moderation || {}) },
+  content: { ...EMPTY_ADMIN_OVERVIEW.content, ...((payload || {}).content || {}) },
+  community: { ...EMPTY_ADMIN_OVERVIEW.community, ...((payload || {}).community || {}) },
+  store: { ...EMPTY_ADMIN_OVERVIEW.store, ...((payload || {}).store || {}) },
+  competition: { ...EMPTY_ADMIN_OVERVIEW.competition, ...((payload || {}).competition || {}) },
+});
 const Admin = () => {
   const { user, token } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [cards, setCards] = useState([]);
-  const [activeTournaments, setActiveTournaments] = useState(0);
-  const [onlineNow, setOnlineNow] = useState(0);
+  const [overview, setOverview] = useState(EMPTY_ADMIN_OVERVIEW);
+  const [section, setSection] = useState("overview");
   const [form, setForm] = useState({ target_user_id: "", severity: "yellow", reason: "" });
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const authH = token ? { Authorization: `Bearer ${token}` } : {};
 
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requested = params.get("tab");
+    if (requested && ADMIN_SECTIONS.some((item) => item.id === requested)) {
+      setSection(requested);
+      return;
+    }
+    setSection("overview");
+  }, [location.search]);
+
+  const openSection = useCallback((nextSection) => {
+    setSection(nextSection);
+    const params = new URLSearchParams(location.search);
+    if (nextSection === "overview") {
+      params.delete("tab");
+    } else {
+      params.set("tab", nextSection);
+    }
+    const search = params.toString();
+    navigate(`${location.pathname}${search ? `?${search}` : ""}`);
+  }, [location.pathname, location.search, navigate]);
+
   const refresh = useCallback(async () => {
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    const [cardsResponse, tournamentsResponse, statsResponse] = await Promise.all([
-      axios.get(`${API}/cards?status_f=active`, { headers }),
-      axios.get(`${API}/tournaments`),
-      axios.get(`${API}/stats/global`),
-    ]);
-    setCards(cardsResponse.data);
-    setActiveTournaments(tournamentsResponse.data.filter((tournament) => tournament.status !== "closed").length);
-    setOnlineNow(statsResponse.data.online_now || 0);
+    if (!token) {
+      setCards([]);
+      setOverview(EMPTY_ADMIN_OVERVIEW);
+      return;
+    }
+    setRefreshing(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const [overviewResponse, cardsResponse] = await Promise.all([
+        axios.get(`${API}/admin/overview`, { headers }),
+        axios.get(`${API}/cards?status_f=active`, { headers }),
+      ]);
+      setOverview(mergeAdminOverview(overviewResponse.data));
+      setCards(cardsResponse.data || []);
+    } catch {
+      setOverview(EMPTY_ADMIN_OVERVIEW);
+      setCards([]);
+    } finally {
+      setRefreshing(false);
+    }
   }, [token]);
   useEffect(() => {
     if (!user?.is_admin || !token) return;
@@ -5451,8 +5639,322 @@ const Admin = () => {
     );
   }
 
-  const yellows = cards.filter(c => c.severity === "yellow").length;
-  const reds = cards.filter(c => c.severity === "red").length;
+  const yellows = overview.moderation.cards_yellow || cards.filter((item) => item.severity === "yellow").length;
+  const reds = overview.moderation.cards_red || cards.filter((item) => item.severity === "red").length;
+  const summaryCards = [
+    { label: "Signalements ouverts", value: overview.moderation.reports_open, color: "text-red-400", section: "moderation" },
+    { label: "Tournois actifs", value: overview.competition.tournaments_active, color: "text-orange-400", section: "tournaments" },
+    { label: "Annonces live", value: overview.content.announcements_live, color: "text-yellow-neon", section: "content" },
+    { label: "Demandes boutique", value: overview.store.redemptions_pending, color: "text-emerald-300", section: "store" },
+  ];
+  const sectionBadges = {
+    overview: 0,
+    moderation: overview.moderation.reports_open + overview.moderation.cards_active,
+    tournaments: overview.competition.tournaments_active,
+    teams: overview.community.teams_total,
+    content: overview.content.announcements_live + overview.content.contests_live,
+    store: overview.store.redemptions_pending,
+    cs2: overview.competition.fun_matches_waiting_server + overview.competition.fun_matches_live,
+  };
+  const attentionItems = [
+    overview.moderation.reports_open > 0 ? {
+      id: "reports-open",
+      text: `${overview.moderation.reports_open} signalement(s) a traiter`,
+      section: "moderation",
+      tone: "text-red-300",
+    } : null,
+    overview.store.redemptions_pending > 0 ? {
+      id: "store-pending",
+      text: `${overview.store.redemptions_pending} demande(s) boutique en attente`,
+      section: "store",
+      tone: "text-emerald-200",
+    } : null,
+    overview.competition.fun_matches_waiting_server > 0 ? {
+      id: "fun-waiting",
+      text: `${overview.competition.fun_matches_waiting_server} room(s) Fun 5v5 attendent un serveur`,
+      section: "cs2",
+      tone: "text-yellow-neon",
+    } : null,
+    overview.content.news_scheduled > 0 ? {
+      id: "news-scheduled",
+      text: `${overview.content.news_scheduled} news programmee(s) a verifier`,
+      section: "content",
+      tone: "text-cyan-neon",
+    } : null,
+  ].filter(Boolean);
+  const cockpitCards = [
+    {
+      id: "moderation",
+      label: "Moderation",
+      value: overview.moderation.cards_active,
+      detail: `${overview.moderation.reports_open} ouverts • ${yellows} jaunes • ${reds} rouges`,
+      section: "moderation",
+      icon: AlertTriangle,
+      color: "text-red-400",
+    },
+    {
+      id: "content",
+      label: "Contenu live",
+      value: overview.content.announcements_live + overview.content.contests_live,
+      detail: `${overview.content.news_published} news • ${overview.content.announcements_live} annonces • ${overview.content.contests_live} concours`,
+      section: "content",
+      icon: Zap,
+      color: "text-yellow-neon",
+    },
+    {
+      id: "competition",
+      label: "Competition",
+      value: overview.competition.tournaments_live + overview.competition.fun_matches_live,
+      detail: `${overview.competition.tournaments_live} tournois live • ${overview.competition.duels_active} duels actifs`,
+      section: "tournaments",
+      icon: Trophy,
+      color: "text-orange-400",
+    },
+    {
+      id: "store",
+      label: "Boutique",
+      value: overview.store.rewards_active,
+      detail: `${overview.store.redemptions_pending} demande(s) en attente`,
+      section: "store",
+      icon: ShoppingBag,
+      color: "text-emerald-300",
+    },
+    {
+      id: "community",
+      label: "Communaute",
+      value: overview.community.users_total,
+      detail: `${overview.community.teams_total} equipes inscrites`,
+      section: "teams",
+      icon: Users,
+      color: "text-cyan-neon",
+    },
+    {
+      id: "cs2",
+      label: "CS2 orchestration",
+      value: overview.competition.fun_matches_ready + overview.competition.fun_matches_waiting_server,
+      detail: `${overview.competition.fun_matches_live} live • ${overview.competition.fun_matches_waiting_server} en attente serveur`,
+      section: "cs2",
+      icon: Server,
+      color: "text-white",
+    },
+  ];
+  const activeSection = ADMIN_SECTIONS.find((item) => item.id === section) || ADMIN_SECTIONS[0];
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="admin-page">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <div className="text-xs uppercase tracking-[0.32em] text-white/45">Centre organisateur</div>
+          <h1 className="font-display text-5xl uppercase mt-3">Pilotage ReadyUp Arena</h1>
+          <p className="text-white/60 mt-4 max-w-3xl">
+            Moderation, contenu, boutique, equipes, tournois et orchestration CS2 sont centralises ici.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => openSection("overview")} className="btn-ghost text-xs">
+            <Shield size={14}/>Vue d'ensemble
+          </button>
+          <button onClick={() => { refresh().catch(() => {}); }} disabled={refreshing} className="btn-ghost text-xs">
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""}/>{refreshing ? "Actualisation..." : "Actualiser"}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mt-8">
+        {summaryCards.map((item, index) => (
+          <button
+            key={item.label}
+            type="button"
+            onClick={() => openSection(item.section)}
+            className="glass p-6 text-left transition hover:border-white/20"
+            data-testid={`admin-stat-${index}`}
+          >
+            <div className="text-xs uppercase tracking-widest text-white/40">{item.label}</div>
+            <div className={`font-display text-5xl font-bold mt-2 ${item.color}`}>{item.value}</div>
+            <div className="text-xs uppercase tracking-widest text-white/30 mt-3 flex items-center gap-2">
+              Ouvrir
+              <ChevronRight size={14}/>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="glass p-3 mt-6 flex flex-wrap gap-2" data-testid="admin-section-nav">
+        {ADMIN_SECTIONS.map((item) => {
+          const Icon = item.icon;
+          const active = item.id === section;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => openSection(item.id)}
+              className={`inline-flex items-center gap-2 px-4 py-2 border text-sm uppercase tracking-[0.22em] transition ${active ? "border-cyan-neon text-cyan-neon bg-white/5" : "border-white/10 text-white/65 hover:border-white/25 hover:text-white"}`}
+            >
+              <Icon size={14}/>
+              {item.label}
+              {sectionBadges[item.id] > 0 && (
+                <span className={`px-2 py-0.5 rounded-full border border-current/30 text-[10px] ${item.accent}`}>{sectionBadges[item.id]}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center justify-between gap-3 mt-5">
+        <div className="text-sm text-white/50">
+          Section active: <span className={activeSection.accent}>{activeSection.label}</span>
+        </div>
+        {overview.generated_at && (
+          <div className="text-xs uppercase tracking-widest text-white/30">
+            Snapshot {new Date(overview.generated_at).toLocaleString("fr-FR")}
+          </div>
+        )}
+      </div>
+
+      {section === "overview" && (
+        <>
+          <SectionTitle sub="Lecture rapide" title="Points d'attention"/>
+          <div className="grid lg:grid-cols-[1.2fr,1fr] gap-4">
+            <div className="glass p-6">
+              <div className="text-xs uppercase tracking-widest text-white/40">A surveiller maintenant</div>
+              <div className="mt-4 space-y-3">
+                {attentionItems.length === 0 && <div className="text-white/40">Aucune alerte immediate. Le cockpit est propre.</div>}
+                {attentionItems.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => openSection(item.section)}
+                    className="w-full border border-white/10 px-4 py-3 text-left transition hover:border-white/20"
+                  >
+                    <div className={`font-display text-lg uppercase ${item.tone}`}>{item.text}</div>
+                    <div className="text-xs uppercase tracking-widest text-white/35 mt-2 flex items-center gap-2">
+                      Ouvrir la file concernee
+                      <ChevronRight size={14}/>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="glass p-6">
+              <div className="text-xs uppercase tracking-widest text-white/40">Vue live</div>
+              <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+                <div className="border border-white/10 p-4">
+                  <div className="text-white/40 uppercase tracking-widest text-[11px]">Tournois live</div>
+                  <div className="font-display text-3xl mt-2 text-orange-400">{overview.competition.tournaments_live}</div>
+                </div>
+                <div className="border border-white/10 p-4">
+                  <div className="text-white/40 uppercase tracking-widest text-[11px]">Duels actifs</div>
+                  <div className="font-display text-3xl mt-2 text-cyan-neon">{overview.competition.duels_active}</div>
+                </div>
+                <div className="border border-white/10 p-4">
+                  <div className="text-white/40 uppercase tracking-widest text-[11px]">Rooms fun live</div>
+                  <div className="font-display text-3xl mt-2 text-white">{overview.competition.fun_matches_live}</div>
+                </div>
+                <div className="border border-white/10 p-4">
+                  <div className="text-white/40 uppercase tracking-widest text-[11px]">Equipes</div>
+                  <div className="font-display text-3xl mt-2 text-cyan-neon">{overview.community.teams_total}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <SectionTitle sub="Acces direct" title="Cockpit par domaine"/>
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {cockpitCards.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => openSection(item.section)}
+                  className="glass p-6 text-left transition hover:border-white/20"
+                  data-testid={`admin-overview-card-${item.id}`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className={`inline-flex items-center gap-2 text-xs uppercase tracking-[0.24em] ${item.color}`}>
+                      <Icon size={14}/>
+                      {item.label}
+                    </div>
+                    <ChevronRight size={16} className="text-white/30"/>
+                  </div>
+                  <div className={`font-display text-5xl mt-4 ${item.color}`}>{item.value}</div>
+                  <div className="text-sm text-white/55 mt-3">{item.detail}</div>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {section === "moderation" && (
+        <>
+          <SectionTitle sub="Moderation en direct" title="Emettre un carton"/>
+          <form onSubmit={issue} className="glass p-6 grid md:grid-cols-4 gap-3 items-end">
+            <div>
+              <label className="text-xs uppercase tracking-widest text-white/40">User ID cible</label>
+              <input value={form.target_user_id} onChange={(e)=>setForm({ ...form, target_user_id: e.target.value })} placeholder="UUID utilisateur" required data-testid="card-target-input"/>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-widest text-white/40">Severite</label>
+              <select value={form.severity} onChange={(e)=>setForm({ ...form, severity: e.target.value })} data-testid="card-severity-select">
+                <option value="yellow">Jaune</option>
+                <option value="red">Rouge</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-widest text-white/40">Raison</label>
+              <input value={form.reason} onChange={(e)=>setForm({ ...form, reason: e.target.value })} placeholder="Motif detaille" minLength={3} required data-testid="card-reason-input"/>
+            </div>
+            <button disabled={busy} className="btn-neon" data-testid="card-issue-btn">
+              <AlertTriangle size={14}/>Emettre
+            </button>
+          </form>
+
+          <SectionTitle sub="Cartons actifs" title={`${cards.length} carton(s) en cours`}/>
+          <div className="grid md:grid-cols-3 gap-4">
+            {cards.length === 0 && <div className="glass p-6 text-white/40">Aucun carton actif.</div>}
+            {cards.map((item) => (
+              <div key={item.id} className="glass p-5" data-testid={`card-case-${item.id}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-display text-lg">{item.target_pseudo}</span>
+                  <div className={`px-3 py-1 font-display text-xs uppercase tracking-widest ${item.severity === "red" ? "bg-red-600 text-white" : "bg-yellow-500 text-black"}`}>
+                    {item.severity === "red" ? "ROUGE" : "JAUNE"} {item.auto && "(auto)"}
+                  </div>
+                </div>
+                <p className="text-sm text-white/60 mt-3">{item.reason}</p>
+                <p className="text-xs text-white/30 mt-1">Emis par {item.issuer_pseudo} • {new Date(item.created_at).toLocaleString("fr-FR")}</p>
+                <div className="flex gap-2 mt-4">
+                  <button onClick={()=>revoke(item.id)} className="btn-ghost text-xs" data-testid={`revoke-card-${item.id}`}>Lever le carton</button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <MatchReportsAdmin/>
+        </>
+      )}
+
+      {section === "tournaments" && (
+        <>
+          <TournamentCrudAdmin/>
+          <TournamentAdmin/>
+        </>
+      )}
+
+      {section === "teams" && <TeamAdmin/>}
+
+      {section === "content" && (
+        <>
+          <NewsAdmin/>
+          <AnnouncementAdmin/>
+          <ContestAdmin/>
+        </>
+      )}
+
+      {section === "store" && <RewardAdmin/>}
+
+      {section === "cs2" && <Cs2Panel/>}
+    </div>
+  );
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="admin-page">
       <h1 className="font-display text-5xl uppercase">Tableau de bord — Organisateur</h1>
@@ -5607,8 +6109,26 @@ const Login = () => {
   const location = useLocation();
   const [mode, setMode] = useState("login");
   const [form, setForm] = useState({ pseudo: "", email: "", password: "", country: "FR" });
+  const [platformConfig, setPlatformConfig] = useState(null);
   const [err, setErr] = useState(""); const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(false);
   useEffect(() => { if (user) navigate("/profile"); }, [user, navigate]);
+  useEffect(() => {
+    let cancelled = false;
+    axios.get(`${API}/config`)
+      .then((response) => {
+        if (!cancelled) {
+          setPlatformConfig(response.data);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPlatformConfig(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useEffect(() => {
     const steamError = new URLSearchParams(location.search).get("steam_error");
     if (!steamError) return;
@@ -5630,12 +6150,16 @@ const Login = () => {
     }
     setErr("Connexion Steam impossible pour le moment.");
   }, [location.search]);
-  const handleSteam = () => { window.location.href = `${API}/auth/steam/login?frontend_origin=${encodeURIComponent(window.location.origin)}`; };
+  const steamAuthEnabled = platformConfig?.feature_steam_auth !== false;
+  const backendUrlConfigured = Boolean(platformConfig?.integrations?.steam_auth?.backend_public_url_configured);
+  const handleSteam = () => {
+    window.location.href = `${BACKEND_BASE_URL}/api/auth/steam/login?frontend_origin=${encodeURIComponent(window.location.origin)}`;
+  };
   const submit = async (e) => {
     e.preventDefault(); setErr(""); setMsg(""); setBusy(true);
     try {
       if (mode === "forgot") {
-        const r = await axios.post(`${API}/auth/forgot-password`, { email: form.email });
+        const r = await axios.post(`${API}/auth/forgot-password`, { email: form.email, origin: window.location.origin });
         setMsg(r.data.message);
       } else if (mode === "login") { await login(form.email, form.password); navigate("/profile"); }
       else { await register(form.pseudo, form.email, form.password, form.country); navigate("/profile"); }
@@ -5652,9 +6176,14 @@ const Login = () => {
           <button onClick={() => setMode("register")} data-testid="tab-register"
             className={`flex-1 py-2 font-display uppercase text-sm tracking-widest ${mode==="register"?"bg-orange-500 text-black":"border border-white/10"}`}>Inscription</button>
         </div>
-        <button onClick={handleSteam} className="w-full mt-6 py-4 bg-[#171a21] hover:bg-[#1f242c] border border-white/10 flex items-center justify-center gap-3 font-display uppercase tracking-widest text-sm" data-testid="steam-login-btn">
-          <Gamepad2 size={20} className="text-cyan-400"/>Se connecter avec Steam
+        <button onClick={handleSteam} disabled={!steamAuthEnabled} className="w-full mt-6 py-4 bg-[#171a21] hover:bg-[#1f242c] disabled:opacity-50 disabled:cursor-not-allowed border border-white/10 flex items-center justify-center gap-3 font-display uppercase tracking-widest text-sm" data-testid="steam-login-btn">
+          <SteamMark className="h-5 w-5 text-cyan-400"/>Se connecter avec Steam
         </button>
+        {platformConfig && !backendUrlConfigured && (
+          <p className="text-[11px] text-yellow-neon/80 mt-3 text-center">
+            URL backend publique non figee. La connexion Steam passe en direct sur Render pour eviter les retours vers localhost.
+          </p>
+        )}
         <div className="flex items-center gap-3 my-6"><div className="h-px bg-white/10 flex-1"/><span className="text-xs uppercase tracking-widest text-white/30">ou</span><div className="h-px bg-white/10 flex-1"/></div>
         <form onSubmit={submit} className="space-y-3">
           {mode === "register" && (<input className="w-full" placeholder="Pseudo (min 3)" value={form.pseudo} onChange={e=>setForm({...form,pseudo:e.target.value})} required minLength={3} data-testid="register-pseudo"/>)}
