@@ -4868,6 +4868,10 @@ const TeamAdmin = () => {
   const [selectedTeamId, setSelectedTeamId] = useState("");
   const [form, setForm] = useState(makeTeamForm());
   const [busyKey, setBusyKey] = useState("");
+  const [candidateQuery, setCandidateQuery] = useState("");
+  const [candidateRole, setCandidateRole] = useState("member");
+  const [candidateResults, setCandidateResults] = useState([]);
+  const [candidateError, setCandidateError] = useState("");
 
   const refresh = useCallback(async () => {
     if (!isAdmin) return;
@@ -4898,6 +4902,13 @@ const TeamAdmin = () => {
     });
   }, [selectedTeam]);
 
+  useEffect(() => {
+    setCandidateQuery("");
+    setCandidateRole("member");
+    setCandidateResults([]);
+    setCandidateError("");
+  }, [selectedTeamId]);
+
   const saveTeam = async (event) => {
     event.preventDefault();
     if (!selectedTeam) return;
@@ -4920,6 +4931,44 @@ const TeamAdmin = () => {
       await refresh();
     } catch (error) {
       alert(error.response?.data?.detail || "Erreur equipe");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const searchCandidates = async (event) => {
+    event?.preventDefault?.();
+    if (!selectedTeam || !candidateQuery.trim()) {
+      setCandidateResults([]);
+      setCandidateError("");
+      return;
+    }
+    setBusyKey(`search-${selectedTeam.id}`);
+    setCandidateError("");
+    try {
+      const response = await axios.get(`${API}/admin/users/search`, {
+        headers: authH,
+        params: { q: candidateQuery.trim(), available_only: true, limit: 8 },
+      });
+      setCandidateResults(response.data || []);
+    } catch (error) {
+      setCandidateResults([]);
+      setCandidateError(error.response?.data?.detail || "Erreur recherche joueur");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const addMember = async (teamId, memberId) => {
+    setBusyKey(`add-${teamId}-${memberId}`);
+    setCandidateError("");
+    try {
+      await axios.post(`${API}/admin/teams/${teamId}/members/add`, { user_id: memberId, role: candidateRole }, { headers: authH });
+      setCandidateResults((current) => current.filter((item) => item.id !== memberId));
+      setCandidateQuery("");
+      await refresh();
+    } catch (error) {
+      setCandidateError(error.response?.data?.detail || "Erreur ajout membre");
     } finally {
       setBusyKey("");
     }
@@ -5005,6 +5054,52 @@ const TeamAdmin = () => {
                 <div className="md:col-span-2"><label className="text-xs uppercase tracking-widest text-white/40">Description</label><textarea rows={4} value={form.description} onChange={(e)=>setForm({ ...form, description: e.target.value })} /></div>
                 <div className="md:col-span-2"><button disabled={busyKey === `save-${selectedTeam.id}`} className="btn-neon"><Shield size={14}/>{busyKey === `save-${selectedTeam.id}` ? "Sauvegarde..." : "Sauvegarder"}</button></div>
               </form>
+
+              <div className="mt-8">
+                <div className="text-xs uppercase tracking-widest text-cyan-neon">Ajouter un joueur plateforme</div>
+                <form onSubmit={searchCandidates} className="grid xl:grid-cols-[1fr_180px_auto] gap-3 mt-4">
+                  <input
+                    value={candidateQuery}
+                    onChange={(e) => setCandidateQuery(e.target.value)}
+                    placeholder="Pseudo, email ou Steam ID"
+                  />
+                  <select value={candidateRole} onChange={(e) => setCandidateRole(e.target.value)}>
+                    <option value="member">Membre</option>
+                    <option value="captain">Capitaine</option>
+                  </select>
+                  <button disabled={busyKey === `search-${selectedTeam.id}`} className="btn-ghost">
+                    <Users size={14}/>{busyKey === `search-${selectedTeam.id}` ? "Recherche..." : "Chercher"}
+                  </button>
+                </form>
+                {candidateError && <div className="text-sm text-red-300 mt-3">{candidateError}</div>}
+                {candidateResults.length > 0 && (
+                  <div className="space-y-3 mt-4">
+                    {candidateResults.map((candidate) => (
+                      <div key={candidate.id} className="border border-white/10 p-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <div className="font-display uppercase flex items-center gap-2">
+                            <span>{candidate.pseudo || candidate.email || candidate.id}</span>
+                            {candidate.steam_verified && <Badge variant="verified">Steam</Badge>}
+                          </div>
+                          <div className="text-xs text-white/45 mt-2">
+                            {candidate.email || "email indisponible"} • {candidate.country || "EU"} • {candidate.steam_id || "Steam ID absent"}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => addMember(selectedTeam.id, candidate.id)}
+                          disabled={busyKey === `add-${selectedTeam.id}-${candidate.id}`}
+                          className="btn-neon"
+                        >
+                          <Plus size={14}/>{busyKey === `add-${selectedTeam.id}-${candidate.id}` ? "Ajout..." : "Ajouter"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!candidateResults.length && candidateQuery.trim() && busyKey !== `search-${selectedTeam.id}` && !candidateError && (
+                  <div className="text-white/35 mt-4">Aucun joueur libre ne correspond a cette recherche.</div>
+                )}
+              </div>
 
               <div className="mt-8">
                 <div className="text-xs uppercase tracking-widest text-yellow-neon">Gestion des membres</div>

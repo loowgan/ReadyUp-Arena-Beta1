@@ -1898,6 +1898,11 @@ class TeamMemberAdminReq(BaseModel):
     role: Optional[str] = Field(default=None, pattern="^(captain|member)$")
 
 
+class TeamMemberAddReq(BaseModel):
+    user_id: str = Field(min_length=3, max_length=64)
+    role: str = Field(default="member", pattern="^(captain|member)$")
+
+
 class FunMatchCreateReq(BaseModel):
     title: str = Field(min_length=3, max_length=80)
     description: str = Field(default="", max_length=500)
@@ -2038,6 +2043,20 @@ async def _assign_team_captain(team_id: str, new_captain: dict) -> None:
         {"id": team_id},
         {"$set": {"captain_user_id": new_captain["id"], "captain_pseudo": new_captain.get("pseudo"), "updated_at": now_iso}},
     )
+
+
+def _admin_user_search_payload(doc: dict) -> dict:
+    return {
+        "id": doc.get("id"),
+        "pseudo": doc.get("pseudo"),
+        "email": doc.get("email"),
+        "steam_id": doc.get("steam_id"),
+        "steam_verified": bool(doc.get("steam_verified")),
+        "team_id": doc.get("team_id"),
+        "team_role": doc.get("team_role"),
+        "country": doc.get("country"),
+        "avatar_url": doc.get("custom_avatar_url") or doc.get("steam_avatar_url"),
+    }
 
 
 async def _disband_team(team: dict, actor_user_id: str, reason: str, event_name: str = "team_disbanded") -> None:
@@ -2347,6 +2366,44 @@ async def admin_list_teams():
     return [await _team_public(doc, include_members=True) for doc in docs]
 
 
+@api_router.get("/admin/users/search", dependencies=[Depends(get_admin_user)])
+async def admin_search_users(q: str = "", limit: int = 12, available_only: bool = True):
+    safe_limit = max(1, min(int(limit or 12), 50))
+    query = str(q or "").strip().lower()
+    docs = await db.users.find(
+        {},
+        {
+            "_id": 0,
+            "id": 1,
+            "pseudo": 1,
+            "email": 1,
+            "steam_id": 1,
+            "steam_verified": 1,
+            "team_id": 1,
+            "team_role": 1,
+            "country": 1,
+            "custom_avatar_url": 1,
+            "steam_avatar_url": 1,
+        },
+    ).to_list(500)
+    rows = []
+    for doc in docs:
+        if available_only and doc.get("team_id"):
+            continue
+        haystack = " ".join(
+            [
+                str(doc.get("pseudo") or ""),
+                str(doc.get("email") or ""),
+                str(doc.get("steam_id") or ""),
+            ]
+        ).lower()
+        if query and query not in haystack:
+            continue
+        rows.append(_admin_user_search_payload(doc))
+    rows.sort(key=lambda item: (str(item.get("pseudo") or "").lower(), str(item.get("email") or "").lower()))
+    return rows[:safe_limit]
+
+
 @api_router.patch("/admin/teams/{team_id}", dependencies=[Depends(get_admin_user)])
 async def admin_update_team(team_id: str, req: TeamUpdateReq, admin=Depends(get_admin_user)):
     team = await _get_team_or_404(team_id)
@@ -2382,6 +2439,37 @@ async def admin_delete_team(team_id: str, admin=Depends(get_admin_user)):
     team = await _get_team_or_404(team_id)
     await _disband_team(team, admin["id"], "admin_deleted_team", event_name="team_admin_deleted")
     return {"ok": True, "id": team_id}
+
+
+@api_router.post("/admin/teams/{team_id}/members/add", dependencies=[Depends(get_admin_user)])
+async def admin_add_team_member(team_id: str, req: TeamMemberAddReq, admin=Depends(get_admin_user)):
+    team = await _get_team_or_404(team_id)
+    member = await db.users.find_one({"id": req.user_id}, {"_id": 0, "password_hash": 0})
+    if not member:
+        raise HTTPException(404, "Joueur introuvable")
+    if member.get("team_id") == team_id:
+        raise HTTPException(409, "Ce joueur fait deja partie de cette equipe")
+    if member.get("team_id"):
+        raise HTTPException(409, "Ce joueur appartient deja a une autre equipe")
+    members = await _collect_team_members(team_id)
+    if len(members) >= int(team.get("members_limit", 7)):
+        raise HTTPException(400, "Equipe complete")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    next_role = "captain" if req.role == "captain" else "member"
+    await db.users.update_one(
+        {"id": member["id"]},
+        {"$set": {"team_id": team_id, "team_role": next_role, "updated_at": now_iso}},
+    )
+    if next_role == "captain":
+        await _assign_team_captain(team_id, member)
+        event_name = "team_admin_captain_changed"
+    else:
+        await db.teams.update_one({"id": team_id}, {"$set": {"updated_at": now_iso}})
+        event_name = "team_admin_member_added"
+    await journal(event_name, admin["id"], {"team_id": team_id, "member_id": member["id"], "role": next_role})
+    updated = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    return await _team_public(updated, include_members=True)
 
 
 @api_router.post("/admin/teams/{team_id}/members/{member_id}/role", dependencies=[Depends(get_admin_user)])
