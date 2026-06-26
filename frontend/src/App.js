@@ -4392,42 +4392,107 @@ const RewardsStorePage = () => {
 };
 
 /* ============== TOURNAMENT STATE MACHINE (admin) ============== */
+const formatCountdownCompact = (seconds) => {
+  const safe = Math.max(0, Number(seconds || 0));
+  const mm = String(Math.floor(safe / 60)).padStart(2, "0");
+  const ss = String(safe % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+};
 const TRANSITIONS = { open:["registering","closed"], registering:["starting","open","closed"], starting:["live","closed"], live:["closed"], closed:[] };
 const STATE_FR = { open:"Ouvert", registering:"Inscriptions", starting:"Lancement", live:"En direct", closed:"Terminé" };
-const TournamentAdmin = () => {
+const TournamentAdminLegacy = () => {
   const { token, user } = useAuth();
   const isAdmin = user?.is_admin;
   const authH = token ? { Authorization: `Bearer ${token}` } : {};
   const [tours, setTours] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [selectedId, setSelectedId] = useState("");
+  const [snapshots, setSnapshots] = useState({});
+  const [busyKey, setBusyKey] = useState("");
+  const [countdownInputs, setCountdownInputs] = useState({});
   const [runtimeMessage, setRuntimeMessage] = useState("");
-  const refresh = useCallback(() => axios.get(`${API}/tournaments`).then(r => setTours(r.data)), []);
+  const [snapshotError, setSnapshotError] = useState("");
+  const refresh = useCallback(async () => {
+    const response = await axios.get(`${API}/tournaments`);
+    const rows = response.data || [];
+    setTours(rows);
+    setSelectedId((current) => (current && rows.some((item) => item.id === current) ? current : (rows[0]?.id || "")));
+  }, []);
+  const loadSnapshot = useCallback(async (tournamentId, { silent = false } = {}) => {
+    if (!tournamentId) return;
+    try {
+      const response = await axios.get(`${API}/tournaments/${tournamentId}/waiting-room`);
+      setSnapshots((current) => ({ ...current, [tournamentId]: response.data }));
+      if (!silent) setSnapshotError("");
+    } catch (error) {
+      if (!silent) setSnapshotError(error.response?.data?.detail || "Impossible de charger la salle d'attente");
+    }
+  }, []);
   useEffect(() => {
     refresh();
     const handler = () => refresh();
     window.addEventListener("readyup-tournaments-changed", handler);
     return () => window.removeEventListener("readyup-tournaments-changed", handler);
   }, [refresh]);
+  useEffect(() => {
+    if (!selectedId) return;
+    loadSnapshot(selectedId);
+  }, [selectedId, loadSnapshot]);
   const transition = async (id, to) => {
-    setBusy(true);
+    setBusyKey(`transition-${id}-${to}`);
     setRuntimeMessage("");
-    try { await axios.post(`${API}/tournaments/${id}/transition`, { to }, { headers: authH }); await refresh(); }
-    catch (e) { alert(e.response?.data?.detail || "Erreur"); } finally { setBusy(false); }
+    try {
+      await axios.post(`${API}/tournaments/${id}/transition`, { to }, { headers: authH });
+      await refresh();
+      await loadSnapshot(id, { silent: true });
+    }
+    catch (e) { alert(e.response?.data?.detail || "Erreur"); } finally { setBusyKey(""); }
   };
   const kickoffRuntime = async (id) => {
-    setBusy(true);
+    setBusyKey(`runtime-${id}`);
     setRuntimeMessage("");
     try {
       const response = await axios.post(`${API}/tournaments/${id}/runtime/kickoff`, {}, { headers: authH });
       const launched = response.data?.launched_matches?.length || 0;
-      setRuntimeMessage(launched > 0 ? `${launched} match(s) CS2 lance(s) ou relance(s).` : "Runtime relance. En attente d'un match pret ou d'un serveur libre.");
+      setRuntimeMessage(launched > 0 ? `${launched} match(s) CS2 lances ou relances.` : "Runtime relance. En attente d'un match pret ou d'un serveur libre.");
       await refresh();
+      await loadSnapshot(id, { silent: true });
     } catch (e) {
       alert(e.response?.data?.detail || "Erreur relance runtime");
     } finally {
-      setBusy(false);
+      setBusyKey("");
     }
   };
+  const startCountdown = async (id) => {
+    const seconds = Math.max(10, Math.min(600, Number(countdownInputs[id] || 30)));
+    setBusyKey(`countdown-start-${id}`);
+    setRuntimeMessage("");
+    try {
+      await axios.post(`${API}/tournaments/${id}/countdown/start`, { seconds }, { headers: authH });
+      setRuntimeMessage(`Decompte premium lance sur ${seconds}s.`);
+      await loadSnapshot(id, { silent: true });
+    } catch (e) {
+      alert(e.response?.data?.detail || "Erreur decompte");
+    } finally {
+      setBusyKey("");
+    }
+  };
+  const cancelCountdown = async (id) => {
+    setBusyKey(`countdown-cancel-${id}`);
+    setRuntimeMessage("");
+    try {
+      const response = await axios.delete(`${API}/tournaments/${id}/countdown`, { headers: authH });
+      setRuntimeMessage(response.data?.cancelled ? "Decompte annule." : "Aucun decompte actif sur ce tournoi.");
+      await loadSnapshot(id, { silent: true });
+    } catch (e) {
+      alert(e.response?.data?.detail || "Erreur annulation decompte");
+    } finally {
+      setBusyKey("");
+    }
+  };
+  const selectedTour = tours.find((item) => item.id === selectedId) || null;
+  const selectedSnapshot = selectedId ? snapshots[selectedId] : null;
+  const activeCards = tours.filter((item) => ["open", "registering", "starting", "live"].includes(item.status)).length;
   return (
     <div data-testid="tournament-admin">
       <SectionTitle sub="Machine à états" title="Cycle de vie des tournois"/>
@@ -4455,6 +4520,332 @@ const TournamentAdmin = () => {
             )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+};
+
+const TournamentAdmin = () => {
+  const { token, user } = useAuth();
+  const isAdmin = user?.is_admin;
+  const authH = token ? { Authorization: `Bearer ${token}` } : {};
+  const [tours, setTours] = useState([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [snapshots, setSnapshots] = useState({});
+  const [busyKey, setBusyKey] = useState("");
+  const [countdownInputs, setCountdownInputs] = useState({});
+  const [runtimeMessage, setRuntimeMessage] = useState("");
+  const [snapshotError, setSnapshotError] = useState("");
+
+  const refresh = useCallback(async () => {
+    const response = await axios.get(`${API}/tournaments`);
+    const rows = response.data || [];
+    setTours(rows);
+    setSelectedId((current) => (current && rows.some((item) => item.id === current) ? current : (rows[0]?.id || "")));
+  }, []);
+
+  const loadSnapshot = useCallback(async (tournamentId, { silent = false } = {}) => {
+    if (!tournamentId) return;
+    try {
+      const response = await axios.get(`${API}/tournaments/${tournamentId}/waiting-room`);
+      setSnapshots((current) => ({ ...current, [tournamentId]: response.data }));
+      if (!silent) setSnapshotError("");
+    } catch (error) {
+      if (!silent) setSnapshotError(error.response?.data?.detail || "Impossible de charger la salle d'attente");
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const handler = () => refresh();
+    window.addEventListener("readyup-tournaments-changed", handler);
+    return () => window.removeEventListener("readyup-tournaments-changed", handler);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    loadSnapshot(selectedId);
+  }, [selectedId, loadSnapshot]);
+
+  const transition = async (id, to) => {
+    setBusyKey(`transition-${id}-${to}`);
+    setRuntimeMessage("");
+    try {
+      await axios.post(`${API}/tournaments/${id}/transition`, { to }, { headers: authH });
+      await refresh();
+      await loadSnapshot(id, { silent: true });
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur tournoi");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const kickoffRuntime = async (id) => {
+    setBusyKey(`runtime-${id}`);
+    setRuntimeMessage("");
+    try {
+      const response = await axios.post(`${API}/tournaments/${id}/runtime/kickoff`, {}, { headers: authH });
+      const launched = response.data?.launched_matches?.length || 0;
+      setRuntimeMessage(launched > 0 ? `${launched} match(s) CS2 lances ou relances.` : "Runtime relance. En attente d'un match pret ou d'un serveur libre.");
+      await refresh();
+      await loadSnapshot(id, { silent: true });
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur relance runtime");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const startCountdown = async (id) => {
+    const seconds = Math.max(10, Math.min(600, Number(countdownInputs[id] || 30)));
+    setBusyKey(`countdown-start-${id}`);
+    setRuntimeMessage("");
+    try {
+      await axios.post(`${API}/tournaments/${id}/countdown/start`, { seconds }, { headers: authH });
+      setRuntimeMessage(`Decompte premium lance sur ${seconds}s.`);
+      await loadSnapshot(id, { silent: true });
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur decompte");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const cancelCountdown = async (id) => {
+    setBusyKey(`countdown-cancel-${id}`);
+    setRuntimeMessage("");
+    try {
+      const response = await axios.delete(`${API}/tournaments/${id}/countdown`, { headers: authH });
+      setRuntimeMessage(response.data?.cancelled ? "Decompte annule." : "Aucun decompte actif sur ce tournoi.");
+      await loadSnapshot(id, { silent: true });
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erreur annulation decompte");
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const selectedTour = tours.find((item) => item.id === selectedId) || null;
+  const selectedSnapshot = selectedId ? snapshots[selectedId] : null;
+  const activeCards = tours.filter((item) => ["open", "registering", "starting", "live"].includes(item.status)).length;
+  const teamsIn = selectedSnapshot?.teams_in || selectedTour?.teams_in || [];
+  const soloQueue = selectedSnapshot?.solo_queue || [];
+
+  if (!isAdmin) return null;
+
+  return (
+    <div data-testid="tournament-admin">
+      <SectionTitle
+        sub="Machine a etats"
+        title="Cockpit premium tournois"
+        cta={<button onClick={() => { refresh(); if (selectedId) loadSnapshot(selectedId, { silent: true }); }} className="btn-ghost text-xs"><RefreshCw size={12}/>Rafraichir</button>}
+      />
+      {runtimeMessage && <div className="glass p-4 mb-4 text-sm text-cyan-neon">{runtimeMessage}</div>}
+      <div className="grid xl:grid-cols-[360px_1fr] gap-6">
+        <div className="glass p-6">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-widest text-white/40">Selection rapide</div>
+              <div className="font-display text-2xl uppercase mt-2">{activeCards} tournoi(s) actifs</div>
+            </div>
+            <Badge variant="verified">Admin</Badge>
+          </div>
+          <div className="space-y-3 mt-5">
+            {tours.length === 0 && <div className="text-white/35">Aucun tournoi charge.</div>}
+            {tours.map((t) => {
+              const snap = snapshots[t.id];
+              const selected = selectedId === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setSelectedId(t.id)}
+                  className={`w-full text-left border p-4 transition-colors ${selected ? "border-orange-500/60 bg-white/5" : "border-white/10 hover:border-white/20"}`}
+                  data-testid={`tadmin-${t.id}`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-display text-xl uppercase">{t.name}</div>
+                      <div className="text-xs text-white/45 mt-2">{t.format} • {t.region} • {tournamentRegisteredCount(t)}/{t.capacity}</div>
+                    </div>
+                    <Badge variant={t.status === "live" ? "live" : ["open", "registering", "starting"].includes(t.status) ? "soon" : "offline"} testid={`tstate-${t.id}`}>
+                      {STATE_FR[t.status] || t.status}
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 mt-4 text-[11px] uppercase tracking-widest text-white/40">
+                    <div>{snap?.manual_teams_count ?? t.manual_teams_count ?? 0} teams</div>
+                    <div>{snap?.auto_generated_teams_count ?? t.auto_generated_teams_count ?? 0} auto</div>
+                    <div>{snap?.solo_queue_count ?? t.solo_waiting_count ?? 0} solo</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="glass p-6">
+          {!selectedTour && <div className="text-white/35">Choisissez un tournoi pour afficher le cockpit detaille.</div>}
+          {selectedTour && (
+            <>
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.3em] text-orange-500">Operations premium</div>
+                  <h3 className="font-display text-4xl uppercase mt-3">{selectedTour.name}</h3>
+                  <div className="text-sm text-white/50 mt-3">{selectedTour.organizer} • {selectedTour.format} • {selectedTour.mode} • {selectedTour.region}</div>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <Link to={`/tournament/${selectedTour.id}`} className="btn-ghost text-xs"><ExternalLink size={12}/>Fiche tournoi</Link>
+                  <Link to={`/waiting-room/${selectedTour.id}`} className="btn-neon text-xs"><Radio size={12}/>Salle d'attente</Link>
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-4 gap-4 mt-6">
+                <Stat label="Inscrits effectifs" value={`${selectedSnapshot?.teams_confirmed ?? tournamentRegisteredCount(selectedTour)}/${selectedTour.capacity}`} accent="text-cyan-neon"/>
+                <Stat label="Auto teams" value={selectedSnapshot?.auto_generated_teams_count ?? selectedTour.auto_generated_teams_count ?? 0} accent="text-orange-500"/>
+                <Stat label="Solo queue" value={selectedSnapshot?.solo_queue_count ?? selectedTour.solo_waiting_count ?? 0} accent="text-yellow-neon"/>
+                <Stat label="Countdown" value={selectedSnapshot?.countdown_active ? formatCountdownCompact(selectedSnapshot.starts_in_seconds) : "arme"} accent={selectedSnapshot?.countdown_active ? "text-red-400" : "text-white"}/>
+              </div>
+
+              <div className="grid xl:grid-cols-[1.25fr_0.75fr] gap-4 mt-6">
+                <div className="border border-white/10 p-5 bg-white/[0.02]">
+                  <div className="text-xs uppercase tracking-widest text-white/40">Commandes directes</div>
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    {(TRANSITIONS[selectedTour.status] || []).length === 0 && <span className="text-xs text-white/30">Aucune transition disponible</span>}
+                    {(TRANSITIONS[selectedTour.status] || []).map((to) => (
+                      <button
+                        key={to}
+                        disabled={!!busyKey}
+                        onClick={() => transition(selectedTour.id, to)}
+                        className="btn-ghost text-xs"
+                        data-testid={`transition-${selectedTour.id}-${to}`}
+                      >
+                        → {STATE_FR[to]}
+                      </button>
+                    ))}
+                    {["starting", "live"].includes(selectedTour.status) && (
+                      <button
+                        disabled={!!busyKey}
+                        onClick={() => kickoffRuntime(selectedTour.id)}
+                        className="btn-neon text-xs"
+                        data-testid={`runtime-kickoff-${selectedTour.id}`}
+                      >
+                        <Play size={12}/>Relancer runtime CS2
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid md:grid-cols-[160px_auto_auto] gap-3 mt-5 items-end">
+                    <div>
+                      <label className="text-xs uppercase tracking-widest text-white/40">Decompte (s)</label>
+                      <input
+                        type="number"
+                        min="10"
+                        max="600"
+                        value={countdownInputs[selectedTour.id] ?? 30}
+                        onChange={(e) => setCountdownInputs((current) => ({ ...current, [selectedTour.id]: e.target.value }))}
+                      />
+                    </div>
+                    <button disabled={!!busyKey} onClick={() => startCountdown(selectedTour.id)} className="btn-neon text-xs">
+                      <Zap size={12}/>{busyKey === `countdown-start-${selectedTour.id}` ? "Lancement..." : "Lancer le decompte"}
+                    </button>
+                    <button disabled={!!busyKey} onClick={() => cancelCountdown(selectedTour.id)} className="btn-ghost text-xs">
+                      <RefreshCw size={12}/>{busyKey === `countdown-cancel-${selectedTour.id}` ? "Annulation..." : "Annuler le decompte"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="border border-white/10 p-5 bg-white/[0.02]">
+                  <div className="text-xs uppercase tracking-widest text-white/40">Etat temps reel</div>
+                  <div className="font-display text-3xl uppercase mt-3">{STATE_FR[selectedTour.status] || selectedTour.status}</div>
+                  <div className="text-sm text-white/50 mt-3">
+                    {selectedSnapshot?.countdown_active
+                      ? `Decompte actif pilote par ${selectedSnapshot.countdown_started_by || "admin"}`
+                      : "Aucun decompte actif sur ce tournoi."}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 mt-5 text-sm">
+                    <div className="border border-white/10 p-3">
+                      <div className="text-[10px] uppercase tracking-widest text-white/35">Places manquantes</div>
+                      <div className="font-display text-2xl mt-1">{selectedSnapshot?.teams_missing ?? Math.max((selectedTour.capacity || 0) - tournamentRegisteredCount(selectedTour), 0)}</div>
+                    </div>
+                    <div className="border border-white/10 p-3">
+                      <div className="text-[10px] uppercase tracking-widest text-white/35">Presence live</div>
+                      <div className="font-display text-2xl mt-1">{selectedSnapshot?.presence_count ?? 0}</div>
+                    </div>
+                  </div>
+                  {snapshotError && <div className="text-sm text-red-300 mt-4">{snapshotError}</div>}
+                </div>
+              </div>
+
+              <div className="grid lg:grid-cols-2 gap-4 mt-6">
+                <div className="border border-white/10 p-5 bg-white/[0.02]">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs uppercase tracking-widest text-cyan-neon">Rosters confirmes</div>
+                    <div className="text-xs text-white/35">{teamsIn.length} lineup(s)</div>
+                  </div>
+                  <div className="space-y-3 mt-4 max-h-[420px] overflow-y-auto pr-1">
+                    {teamsIn.map((team, index) => (
+                      <div key={team.id || index} className="border border-white/10 p-4">
+                        <div className="flex items-center gap-3">
+                          <TeamLogo team={team} size={40}/>
+                          <div className="flex-1">
+                            <div className="font-display uppercase">{team.name}</div>
+                            <div className="text-xs text-white/45 mt-1">{team.tag || "AUTO"} • ELO {formatMetric(team.elo)} • {team.members_count || (team.members || []).length}/5</div>
+                          </div>
+                          {team.generated_from_solos && <Badge variant="soon">AUTO</Badge>}
+                        </div>
+                        {(team.members || []).length > 0 && (
+                          <div className="grid sm:grid-cols-2 gap-2 mt-4">
+                            {(team.members || []).slice(0, 6).map((member) => (
+                              <div key={`${team.id}-${member.id || member.user_id || member.pseudo}`} className="border border-white/10 px-3 py-2 text-sm text-white/70 flex items-center justify-between gap-2">
+                                <span className="truncate">{member.pseudo}</span>
+                                <span className="text-white/35">{formatMetric(member.elo)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {!teamsIn.length && <div className="text-white/35">Aucune equipe confirmee.</div>}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="border border-white/10 p-5 bg-white/[0.02]">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs uppercase tracking-widest text-yellow-neon">File solo</div>
+                      <div className="text-xs text-white/35">{soloQueue.length} joueur(s)</div>
+                    </div>
+                    <div className="space-y-2 mt-4 max-h-52 overflow-y-auto pr-1">
+                      {soloQueue.slice(0, 12).map((player) => (
+                        <div key={player.id} className="border border-white/10 px-3 py-2 text-sm flex items-center justify-between gap-2">
+                          <span className="font-display truncate">{player.pseudo}</span>
+                          <span className="text-white/35">{player.role || "Polyvalent"}</span>
+                        </div>
+                      ))}
+                      {!soloQueue.length && <div className="text-white/35">Aucun solo en attente.</div>}
+                    </div>
+                  </div>
+
+                  <div className="border border-white/10 p-5 bg-white/[0.02]">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs uppercase tracking-widest text-orange-500">Timeline live</div>
+                      <div className="text-xs text-white/35">{selectedSnapshot?.phase || "open"}</div>
+                    </div>
+                    <div className="space-y-3 mt-4 max-h-52 overflow-y-auto pr-1 text-sm">
+                      {(selectedSnapshot?.events || []).map((item, index) => (
+                        <div key={`${item.time}-${index}`} className="flex gap-3">
+                          <span className="font-mono-display text-white/35">{item.time}</span>
+                          <span className="text-white/70">{item.msg}</span>
+                        </div>
+                      ))}
+                      {!(selectedSnapshot?.events || []).length && <div className="text-white/35">Aucun evenement enregistre.</div>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

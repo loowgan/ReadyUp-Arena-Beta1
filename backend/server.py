@@ -3324,6 +3324,11 @@ async def list_registrations(tid: str):
 class TransitionReq(BaseModel):
     to: str
 
+
+class CountdownStartReq(BaseModel):
+    seconds: int = Field(default=30, ge=10, le=600)
+
+
 @api_router.post("/tournaments/{tid}/transition", dependencies=[Depends(get_admin_user)])
 async def transition_tournament(tid: str, req: TransitionReq, user=Depends(get_admin_user)):
     t = await db.tournaments.find_one({"id": tid})
@@ -3344,6 +3349,42 @@ async def transition_tournament(tid: str, req: TransitionReq, user=Depends(get_a
     elif req.to == "live":
         await _kickoff_tournament_runtime(tid, user["id"])
     return {"id": tid, "from": cur, "to": req.to, "allowed_next": ALLOWED_TRANSITIONS[req.to]}
+
+
+@api_router.post("/tournaments/{tid}/countdown/start", dependencies=[Depends(get_admin_user)])
+async def admin_start_tournament_countdown(tid: str, req: CountdownStartReq, user=Depends(get_admin_user)):
+    tournament = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not tournament:
+        raise HTTPException(404, "Tournoi introuvable")
+    await _ensure_tournament_can_start(tournament)
+    started = await start_countdown(tid, req.seconds, user["pseudo"])
+    if not started:
+        raise HTTPException(409, "Un decompte est deja en cours pour ce tournoi")
+    await journal("tournament_countdown_started", user["id"], {"tournament_id": tid, "seconds": req.seconds})
+    await hub.broadcast(
+        tid,
+        {"type": "event", "time": datetime.now(timezone.utc).strftime("%H:%M:%S"), "msg": f"{user['pseudo']} a lance un decompte de {req.seconds}s"},
+    )
+    return {"ok": True, "tournament_id": tid, "seconds": req.seconds, "phase": _phase_for(req.seconds)}
+
+
+@api_router.delete("/tournaments/{tid}/countdown", dependencies=[Depends(get_admin_user)])
+async def admin_cancel_tournament_countdown(tid: str, user=Depends(get_admin_user)):
+    tournament = await db.tournaments.find_one({"id": tid}, {"_id": 0, "id": 1})
+    if not tournament:
+        raise HTTPException(404, "Tournoi introuvable")
+    current = await rs.get_countdown(tid)
+    if not current:
+        return {"ok": True, "tournament_id": tid, "cancelled": False}
+    await rs.del_countdown(tid)
+    await rs.release_cd_lock(tid)
+    _running_countdowns.discard(tid)
+    await journal("tournament_countdown_cancelled", user["id"], {"tournament_id": tid})
+    await hub.broadcast(
+        tid,
+        {"type": "event", "time": datetime.now(timezone.utc).strftime("%H:%M:%S"), "msg": f"{user['pseudo']} a annule le decompte"},
+    )
+    return {"ok": True, "tournament_id": tid, "cancelled": True}
 
 
 @api_router.post("/tournaments/{tid}/runtime/kickoff", dependencies=[Depends(get_admin_user)])
@@ -3682,6 +3723,8 @@ async def waiting_room_live_snapshot(tid: str):
     return {
         "tournament_id": tid,
         "tournament_name": tournament.get("name"),
+        "countdown_active": bool(countdown),
+        "countdown_started_by": (countdown or {}).get("started_by"),
         "starts_in_seconds": starts_in_seconds,
         "phase": _phase_for(starts_in_seconds),
         "teams_confirmed": snapshot["registered_effective"],
