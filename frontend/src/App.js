@@ -406,6 +406,12 @@ const REWARD_REDEMPTION_STATUS_LABELS = {
   cancelled: "Annulee",
 };
 
+const rewardRedemptionVariant = (status) => {
+  if (status === "delivered") return "verified";
+  if (status === "cancelled") return "offline";
+  return "soon";
+};
+
 const MATCH_EVENT_LABELS = {
   series_start: "Debut de serie",
   series_end: "Fin de serie",
@@ -1796,7 +1802,7 @@ const MatchRoom = () => {
 
 /* ============== PROFILE ============== */
 const Profile = () => {
-  const { user: currentUser, token, setUser } = useAuth();
+  const { user: currentUser, token, setUser, refreshUser } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [rewardHistory, setRewardHistory] = useState([]);
@@ -1823,6 +1829,7 @@ const Profile = () => {
     level: 47,
     xp: 8420,
     xp_next: 10000,
+    tokens: 1840,
     elo: 2240,
     platform_elo: 2240,
     faceit_elo: 2430,
@@ -1872,6 +1879,7 @@ const Profile = () => {
     level: 1,
     xp: 0,
     xp_next: 1000,
+    tokens: 0,
     elo: 1000,
     platform_elo: 1000,
     faceit_elo: null,
@@ -1917,6 +1925,14 @@ const Profile = () => {
     : demoProfile;
   const mergeToken = new URLSearchParams(location.search).get("steam_merge_token");
   const xpPct = (p.xp / p.xp_next) * 100;
+  const refreshRewardHistory = useCallback(async () => {
+    if (!token) {
+      setRewardHistory([]);
+      return;
+    }
+    const response = await axios.get(`${API}/rewards/redemptions/me`, { headers: { Authorization: `Bearer ${token}` } });
+    setRewardHistory(response.data || []);
+  }, [token]);
   useEffect(() => {
     if (!currentUser) return;
     setProfileForm({
@@ -1929,27 +1945,16 @@ const Profile = () => {
     });
   }, [currentUser]);
   useEffect(() => {
-    if (!token) {
-      setRewardHistory([]);
-      return;
-    }
     let cancelled = false;
-    axios
-      .get(`${API}/rewards/redemptions/me`, { headers: { Authorization: `Bearer ${token}` } })
-      .then((response) => {
-        if (!cancelled) {
-          setRewardHistory(response.data || []);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setRewardHistory([]);
-        }
-      });
+    refreshRewardHistory().catch(() => {
+      if (!cancelled) {
+        setRewardHistory([]);
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [refreshRewardHistory]);
   useEffect(() => {
     const steamError = new URLSearchParams(location.search).get("steam_error");
     if (!steamError) return;
@@ -2091,6 +2096,20 @@ const Profile = () => {
       setSyncing(false);
     }
   };
+  const cancelRewardRedemption = async (redemptionId) => {
+    if (!token) return;
+    if (!window.confirm("Annuler cette demande boutique et recuperer vos points ?")) return;
+    setProfileMessage("");
+    setProfileError("");
+    try {
+      await axios.post(`${API}/rewards/redemptions/${redemptionId}/cancel`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      await Promise.all([refreshRewardHistory(), refreshUser(token)]);
+      setProfileMessage("Demande boutique annulee et points rembourses.");
+      setProfileError("");
+    } catch (err) {
+      setProfileError(err?.response?.data?.detail || "Annulation impossible pour le moment.");
+    }
+  };
   const statCards = [
     { label: "ELO plateforme", value: formatMetric(p.platform_elo ?? p.elo), src: p.stats_sources?.platform || "ReadyUp Arena", state: "synced", color: "text-orange-500" },
     {
@@ -2124,6 +2143,12 @@ const Profile = () => {
     { label: "Leetify", href: p.leetify_profile_url },
     { label: "CSWAT", href: p.stats_profile_url },
   ].filter((item) => item.href);
+  const accountCards = [
+    { label: "Jetons", value: formatMetric(p.tokens ?? 0), accent: "text-yellow-neon", hint: "utilisables en duel et boutique" },
+    { label: "Fiabilite", value: formatMetric(p.reliability ?? 50), accent: "text-cyan-neon", hint: "indice interne plateforme" },
+    { label: "Steam", value: p.steam_verified ? "Lie" : "A lier", accent: p.steam_verified ? "text-green-400" : "text-white", hint: p.steam_verified ? "profil synchronisable" : "necessaire pour la sync" },
+    { label: "Equipe", value: p.team_role ? p.team_role : "Libre", accent: "text-orange-500", hint: p.team_id ? "membre d'une equipe" : "aucune equipe active" },
+  ];
   return (
     <div className="max-w-7xl mx-auto px-6 py-10" data-testid="profile-page">
       {mergeToken && (
@@ -2248,6 +2273,16 @@ const Profile = () => {
         </div>
       </div>
 
+      <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mt-6">
+        {accountCards.map((item) => (
+          <div key={item.label} className="glass p-5">
+            <div className="text-xs uppercase tracking-widest text-white/40">{item.label}</div>
+            <div className={`font-display text-3xl mt-2 ${item.accent}`}>{item.value}</div>
+            <div className="text-xs text-white/35 mt-3">{item.hint}</div>
+          </div>
+        ))}
+      </div>
+
       {currentUser && (
         <>
           <SectionTitle sub="Profil" title="Modifier mes informations"/>
@@ -2278,6 +2313,18 @@ const Profile = () => {
               <label className="text-xs uppercase tracking-widest text-white/40">Logo / avatar perso URL</label>
               <input value={profileForm.custom_avatar_url} onChange={(e)=>setProfileForm({...profileForm, custom_avatar_url: e.target.value})} placeholder="https://..."/>
               <div className="text-xs text-white/35 mt-1">Vide = avatar Steam synchronise si disponible.</div>
+              <div className="flex items-center gap-4 mt-3">
+                <div className="w-14 h-14 overflow-hidden border border-white/10 bg-white/5 flex items-center justify-center">
+                  {(profileForm.custom_avatar_url || p.steam_avatar_url || p.avatar_url) ? (
+                    <img src={profileForm.custom_avatar_url || p.steam_avatar_url || p.avatar_url} alt={p.pseudo} className="w-full h-full object-cover"/>
+                  ) : (
+                    <span className="font-display text-lg">{(p.pseudo || "P").slice(0, 1).toUpperCase()}</span>
+                  )}
+                </div>
+                <button type="button" onClick={() => setProfileForm({ ...profileForm, custom_avatar_url: "" })} className="btn-ghost text-xs">
+                  Revenir a l'avatar Steam
+                </button>
+              </div>
             </div>
             <div className="lg:col-span-2">
               <label className="text-xs uppercase tracking-widest text-white/40">Petite description</label>
@@ -2377,12 +2424,20 @@ const Profile = () => {
               <div key={item.id} className="glass p-5" data-testid={`profile-redemption-${item.id}`}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="font-display text-lg uppercase">{item.reward_title || item.reward_id}</div>
-                  <Badge variant={item.status === "delivered" ? "verified" : item.status === "cancelled" ? "offline" : "soon"}>
+                  <Badge variant={rewardRedemptionVariant(item.status)}>
                     {REWARD_REDEMPTION_STATUS_LABELS[item.status] || item.status}
                   </Badge>
                 </div>
                 <div className="text-sm text-white/55 mt-3">{item.cost_tokens} pts</div>
+                {item.delivery_notes && <div className="text-xs text-white/40 mt-2">{item.delivery_notes}</div>}
                 <div className="text-xs text-white/40 mt-2">{new Date(item.created_at).toLocaleString("fr-FR")}</div>
+                {item.status === "pending" && (
+                  <div className="mt-4">
+                    <button onClick={() => cancelRewardRedemption(item.id)} className="btn-ghost text-xs text-red-300">
+                      Annuler et recuperer mes points
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -4001,13 +4056,16 @@ const ContestsPage = () => {
   );
 };
 
-const RewardsStorePage = () => {
-  const { token, user } = useAuth();
+const RewardsStorePageLegacy = () => {
+  const { token, user, refreshUser } = useAuth();
   const [rewards, setRewards] = useState([]);
   const [balance, setBalance] = useState(null);
   const [redemptions, setRedemptions] = useState([]);
   const [busyId, setBusyId] = useState(null);
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [storeMessage, setStoreMessage] = useState("");
+  const [storeError, setStoreError] = useState("");
 
   const refresh = useCallback(async () => {
     const rewardsResponse = await axios.get(`${API}/rewards`);
@@ -4034,6 +4092,8 @@ const RewardsStorePage = () => {
       alert("Connectez-vous pour utiliser vos points.");
       return;
     }
+    setStoreMessage("");
+    setStoreError("");
     setBusyId(rewardId);
     try {
       await axios.post(`${API}/rewards/${rewardId}/redeem`, {}, { headers: { Authorization: `Bearer ${token}` } });
@@ -4119,6 +4179,212 @@ const RewardsStorePage = () => {
             </div>
           </div>
           {!user && <div className="glass p-6 text-white/60">Connectez-vous pour voir votre solde et réserver une reward.</div>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const RewardsStorePage = () => {
+  const { token, user, refreshUser } = useAuth();
+  const [rewards, setRewards] = useState([]);
+  const [balance, setBalance] = useState(null);
+  const [redemptions, setRedemptions] = useState([]);
+  const [busyId, setBusyId] = useState(null);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [storeMessage, setStoreMessage] = useState("");
+  const [storeError, setStoreError] = useState("");
+
+  const refresh = useCallback(async () => {
+    const rewardsResponse = await axios.get(`${API}/rewards`);
+    setRewards(rewardsResponse.data || []);
+    if (!token) {
+      setBalance(null);
+      setRedemptions([]);
+      return;
+    }
+    const [balanceResponse, redemptionsResponse] = await Promise.all([
+      axios.get(`${API}/duels/balance`, { headers: { Authorization: `Bearer ${token}` } }),
+      axios.get(`${API}/rewards/redemptions/me`, { headers: { Authorization: `Bearer ${token}` } }),
+    ]);
+    setBalance(balanceResponse.data.tokens);
+    setRedemptions(redemptionsResponse.data || []);
+  }, [token]);
+
+  useEffect(() => {
+    refresh().catch(() => {});
+  }, [refresh]);
+
+  const redeem = async (rewardId) => {
+    if (!token) {
+      alert("Connectez-vous pour utiliser vos points.");
+      return;
+    }
+    setStoreMessage("");
+    setStoreError("");
+    setBusyId(rewardId);
+    try {
+      await axios.post(`${API}/rewards/${rewardId}/redeem`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      await refresh();
+      await refreshUser(token);
+      setStoreMessage("Reward reservee. Verifiez l'etat dans vos demandes.");
+    } catch (error) {
+      setStoreError(error.response?.data?.detail || "Erreur boutique");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const cancelRedemption = async (redemptionId) => {
+    if (!token) return;
+    if (!window.confirm("Annuler cette demande boutique et recuperer vos points ?")) return;
+    setStoreMessage("");
+    setStoreError("");
+    setBusyId(`cancel-${redemptionId}`);
+    try {
+      await axios.post(`${API}/rewards/redemptions/${redemptionId}/cancel`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      await refresh();
+      await refreshUser(token);
+      setStoreMessage("Demande annulee et points rembourses.");
+    } catch (error) {
+      setStoreError(error.response?.data?.detail || "Erreur boutique");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const rewardCategories = Array.from(new Set(rewards.map((reward) => reward.category).filter(Boolean)));
+  const visibleRewards = categoryFilter === "all"
+    ? rewards
+    : rewards.filter((reward) => reward.category === categoryFilter);
+  const visibleRedemptions = statusFilter === "all"
+    ? redemptions
+    : redemptions.filter((item) => item.status === statusFilter);
+  const pendingCount = redemptions.filter((item) => item.status === "pending").length;
+  const deliveredCount = redemptions.filter((item) => item.status === "delivered").length;
+  const cancelledCount = redemptions.filter((item) => item.status === "cancelled").length;
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="rewards-page">
+      <div className="flex items-center gap-3">
+        <ShoppingBag className="text-cyan-neon" size={32}/>
+        <h1 className="font-display text-5xl uppercase">Boutique de points</h1>
+      </div>
+      <p className="text-white/50 mt-2">Utilise les jetons gagnes dans la plateforme pour debloquer des rewards non competitives.</p>
+
+      {(storeMessage || storeError) && (
+        <div className={`glass p-4 mt-5 text-sm ${storeError ? "text-red-300" : "text-cyan-neon"}`}>
+          {storeError || storeMessage}
+        </div>
+      )}
+
+      {rewardCategories.length > 1 && (
+        <div className="flex flex-wrap gap-2 mt-6">
+          <button onClick={() => setCategoryFilter("all")} className={`btn-ghost text-xs ${categoryFilter === "all" ? "border-cyan-neon text-cyan-neon" : ""}`}>Tout</button>
+          {rewardCategories.map((category) => (
+            <button
+              key={category}
+              onClick={() => setCategoryFilter(category)}
+              className={`btn-ghost text-xs ${categoryFilter === category ? "border-cyan-neon text-cyan-neon" : ""}`}
+            >
+              {category}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4 mt-8">
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Solde</div>
+          <div className="font-display text-4xl text-yellow-neon mt-2">{balance ?? "—"}</div>
+        </div>
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Demandes en attente</div>
+          <div className="font-display text-4xl text-cyan-neon mt-2">{pendingCount}</div>
+        </div>
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Livrees</div>
+          <div className="font-display text-4xl text-green-400 mt-2">{deliveredCount}</div>
+        </div>
+        <div className="glass p-6">
+          <div className="text-xs uppercase tracking-widest text-white/40">Annulees</div>
+          <div className="font-display text-4xl text-white mt-2">{cancelledCount}</div>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-[1.5fr_1fr] gap-4 mt-8">
+        <div className="grid md:grid-cols-2 gap-4">
+          {visibleRewards.length === 0 && <div className="glass p-6 text-white/40">Aucune reward active dans ce filtre.</div>}
+          {visibleRewards.map((reward) => {
+            const canAfford = balance === null || Number(balance) >= Number(reward.cost_tokens);
+            const outOfStock = Number(reward.stock) <= 0;
+            return (
+              <div key={reward.id} className="glass p-6" data-testid={`reward-card-${reward.id}`} style={{ borderColor: `${reward.accent_color || "#00F0FF"}55` }}>
+                <div className="flex items-center justify-between gap-3">
+                  <Badge variant={reward.stock > 0 ? "verified" : "offline"}>{reward.category}</Badge>
+                  <div className="font-display text-yellow-neon">{reward.cost_tokens} pts</div>
+                </div>
+                <h2 className="font-display text-2xl uppercase mt-4">{reward.title}</h2>
+                <p className="text-white/60 mt-3">{reward.summary}</p>
+                <p className="text-sm text-white/50 mt-4">{reward.description}</p>
+                <div className="text-xs uppercase tracking-widest text-white/40 mt-4">Stock: {reward.stock}</div>
+                <div className="text-sm text-white/50 mt-2">{reward.delivery_notes}</div>
+                {!user && <div className="text-xs text-white/40 mt-4">Connectez-vous pour utiliser vos points.</div>}
+                {user && !canAfford && <div className="text-xs text-red-300 mt-4">Solde insuffisant pour cette reward.</div>}
+                {outOfStock && <div className="text-xs text-white/40 mt-4">Rupture temporaire de stock.</div>}
+                <button disabled={busyId === reward.id || outOfStock || (!!user && !canAfford)} onClick={() => redeem(reward.id)} className="btn-neon mt-5">
+                  <Package size={14}/>{busyId === reward.id ? "Traitement..." : "Reserver"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <div className="space-y-4">
+          <div className="glass p-6">
+            <div className="text-xs uppercase tracking-widest text-white/40">Solde disponible</div>
+            <div className="font-display text-5xl text-yellow-neon mt-3">{balance ?? "—"}</div>
+            <p className="text-white/50 mt-3">Le meme solde alimente les duels 1v1 et la boutique de points.</p>
+          </div>
+          <div className="glass p-6">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-xs uppercase tracking-widest text-white/40">Demandes boutique</div>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="max-w-[180px] text-xs">
+                <option value="all">Toutes</option>
+                <option value="pending">En attente</option>
+                <option value="delivered">Livrees</option>
+                <option value="cancelled">Annulees</option>
+              </select>
+            </div>
+            <div className="space-y-3 mt-4">
+              {visibleRedemptions.length === 0 && <div className="text-white/40">Aucune reward reservee sur ce filtre.</div>}
+              {visibleRedemptions.slice(0, 8).map((item) => (
+                <div key={item.id} className="border border-white/10 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-display text-sm uppercase">{item.reward_title || item.reward_id}</div>
+                    <Badge variant={rewardRedemptionVariant(item.status)}>
+                      {REWARD_REDEMPTION_STATUS_LABELS[item.status] || item.status}
+                    </Badge>
+                  </div>
+                  {item.reward_category && <div className="text-[11px] uppercase tracking-widest text-white/35 mt-2">{item.reward_category}</div>}
+                  <div className="text-sm text-white/50 mt-2">{item.cost_tokens} pts • {new Date(item.created_at).toLocaleString("fr-FR")}</div>
+                  {item.delivery_notes && <div className="text-xs text-white/40 mt-2">{item.delivery_notes}</div>}
+                  {item.status === "pending" && (
+                    <div className="mt-3">
+                      <button
+                        onClick={() => cancelRedemption(item.id)}
+                        disabled={busyId === `cancel-${item.id}`}
+                        className="btn-ghost text-xs text-red-300"
+                      >
+                        {busyId === `cancel-${item.id}` ? "Annulation..." : "Annuler"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          {!user && <div className="glass p-6 text-white/60">Connectez-vous pour voir votre solde et reserver une reward.</div>}
         </div>
       </div>
     </div>

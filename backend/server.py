@@ -268,6 +268,7 @@ class UserPublic(BaseModel):
     steam_avatar_url: Optional[str] = None
     level: int
     xp: int
+    tokens: int = 0
     elo: int
     platform_elo: int
     faceit_elo: Optional[int] = None
@@ -425,6 +426,7 @@ def user_to_public(u: dict) -> dict:
     return {"id": u["id"], "pseudo": u["pseudo"], "email": u["email"],
             "country": u.get("country","FR"), "level": u.get("level",1),
             "gender": u.get("gender"), "age": u.get("age"), "bio": u.get("bio"),
+            "tokens": int(u.get("tokens", 0) or 0),
             "xp": u.get("xp",0), **_public_stats_payload(u),
             "steam_verified": u.get("steam_verified", False),
             "created_at": u["created_at"],
@@ -2651,9 +2653,63 @@ async def list_rewards():
 async def my_reward_redemptions(user=Depends(get_current_user)):
     docs = await db.reward_redemptions.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
     reward_ids = [doc.get("reward_id") for doc in docs if doc.get("reward_id")]
-    rewards = await db.rewards.find({"id": {"$in": reward_ids}}, {"_id": 0, "id": 1, "title": 1}).to_list(100) if reward_ids else []
-    title_by_id = {reward["id"]: reward.get("title") for reward in rewards}
-    return [{**doc, "reward_title": title_by_id.get(doc.get("reward_id"))} for doc in docs]
+    rewards = await db.rewards.find(
+        {"id": {"$in": reward_ids}},
+        {"_id": 0, "id": 1, "title": 1, "category": 1, "accent_color": 1, "delivery_notes": 1},
+    ).to_list(100) if reward_ids else []
+    reward_by_id = {reward["id"]: reward for reward in rewards}
+    return [
+        {
+            **doc,
+            "reward_title": (reward_by_id.get(doc.get("reward_id")) or {}).get("title") or doc.get("reward_title"),
+            "reward_category": (reward_by_id.get(doc.get("reward_id")) or {}).get("category"),
+            "reward_accent_color": (reward_by_id.get(doc.get("reward_id")) or {}).get("accent_color"),
+            "delivery_notes": (reward_by_id.get(doc.get("reward_id")) or {}).get("delivery_notes"),
+        }
+        for doc in docs
+    ]
+
+
+async def _apply_reward_redemption_status_change(
+    database,
+    redemption: dict,
+    new_status: str,
+    actor_id: str,
+    actor_role: str = "admin",
+) -> dict:
+    current_status = redemption.get("status", "pending")
+    if current_status == new_status:
+        return redemption
+
+    allowed_transitions = {
+        "pending": {"delivered", "cancelled"},
+        "delivered": {"cancelled"},
+        "cancelled": set(),
+    }
+    if new_status not in allowed_transitions.get(current_status, set()):
+        raise HTTPException(400, f"Transition {current_status} -> {new_status} interdite")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updates = {
+        "status": new_status,
+        "updated_at": now_iso,
+        "updated_by": actor_id,
+        "updated_by_role": actor_role,
+    }
+
+    if new_status == "cancelled":
+        await database.users.update_one({"id": redemption["user_id"]}, {"$inc": {"tokens": redemption["cost_tokens"]}})
+        await database.rewards.update_one({"id": redemption["reward_id"]}, {"$inc": {"stock": 1}})
+        updates["cancelled_at"] = now_iso
+        updates["cancelled_by"] = actor_id
+        updates["cancelled_by_role"] = actor_role
+    elif new_status == "delivered":
+        updates["delivered_at"] = now_iso
+        updates["delivered_by"] = actor_id
+        updates["delivered_by_role"] = actor_role
+
+    await database.reward_redemptions.update_one({"id": redemption["id"]}, {"$set": updates})
+    return {**redemption, **updates}
 
 
 @api_router.post("/rewards/{reward_id}/redeem", dependencies=[Depends(get_current_user)])
@@ -2696,6 +2752,18 @@ async def redeem_reward(reward_id: str, user=Depends(get_current_user)):
     await db.reward_redemptions.insert_one(redemption)
     await journal("reward_redeemed", user["id"], {"reward_id": reward_id, "reward_title": reward["title"], "cost_tokens": reward["cost_tokens"]})
     return redemption
+
+
+@api_router.post("/rewards/redemptions/{redemption_id}/cancel", dependencies=[Depends(get_current_user)])
+async def cancel_my_reward_redemption(redemption_id: str, user=Depends(get_current_user)):
+    existing = await db.reward_redemptions.find_one({"id": redemption_id, "user_id": user["id"]}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Redemption introuvable")
+    if existing.get("status") != "pending":
+        raise HTTPException(400, "Seules les demandes en attente peuvent etre annulees")
+    updated = await _apply_reward_redemption_status_change(db, existing, "cancelled", user["id"], "user")
+    await journal("reward_redemption_cancelled_by_user", user["id"], {"redemption_id": redemption_id, "reward_id": existing.get("reward_id")})
+    return updated
 
 
 @api_router.get("/admin/news", dependencies=[Depends(get_admin_user)])
@@ -2965,36 +3033,13 @@ async def admin_update_reward_redemption(redemption_id: str, req: RewardRedempti
     existing = await db.reward_redemptions.find_one({"id": redemption_id}, {"_id": 0})
     if not existing:
         raise HTTPException(404, "Redemption introuvable")
-    current_status = existing.get("status", "pending")
-    new_status = req.status
-    if current_status == new_status:
-        return existing
-    allowed_transitions = {
-        "pending": {"delivered", "cancelled"},
-        "delivered": {"cancelled"},
-        "cancelled": set(),
-    }
-    if new_status not in allowed_transitions.get(current_status, set()):
-        raise HTTPException(400, f"Transition {current_status} -> {new_status} interdite")
-
-    updates = {
-        "status": new_status,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "updated_by": admin["id"],
-    }
-
-    if new_status == "cancelled":
-        await db.users.update_one({"id": existing["user_id"]}, {"$inc": {"tokens": existing["cost_tokens"]}})
-        await db.rewards.update_one({"id": existing["reward_id"]}, {"$inc": {"stock": 1}})
-        updates["cancelled_at"] = datetime.now(timezone.utc).isoformat()
-        updates["cancelled_by"] = admin["id"]
-    elif new_status == "delivered":
-        updates["delivered_at"] = datetime.now(timezone.utc).isoformat()
-        updates["delivered_by"] = admin["id"]
-
-    await db.reward_redemptions.update_one({"id": redemption_id}, {"$set": updates})
-    await journal("reward_redemption_updated", admin["id"], {"redemption_id": redemption_id, "from": current_status, "to": new_status})
-    return {**existing, **updates}
+    updated = await _apply_reward_redemption_status_change(db, existing, req.status, admin["id"], "admin")
+    await journal(
+        "reward_redemption_updated",
+        admin["id"],
+        {"redemption_id": redemption_id, "from": existing.get("status", "pending"), "to": req.status},
+    )
+    return updated
 
 
 @api_router.delete("/admin/rewards/{reward_id}", dependencies=[Depends(get_admin_user)])
