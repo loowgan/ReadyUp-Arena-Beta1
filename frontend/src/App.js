@@ -2711,6 +2711,10 @@ const TeamsPage = () => {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedTeam, setSelectedTeam] = useState(null);
   const [applications, setApplications] = useState([]);
+  const [recruitQuery, setRecruitQuery] = useState("");
+  const [recruitRole, setRecruitRole] = useState("member");
+  const [recruitCandidates, setRecruitCandidates] = useState([]);
+  const [recruitHasSearched, setRecruitHasSearched] = useState(false);
   const [teamForm, setTeamForm] = useState(makeTeamForm());
   const [applyTarget, setApplyTarget] = useState(null);
   const [applyForm, setApplyForm] = useState({ role: "Polyvalent", message: "" });
@@ -2761,6 +2765,15 @@ const TeamsPage = () => {
       setTeamForm(makeTeamForm());
     }
   }, [myTeam, isCaptain]);
+
+  useEffect(() => {
+    if (!myTeam?.id || !isCaptain) {
+      setRecruitQuery("");
+      setRecruitRole("member");
+      setRecruitCandidates([]);
+      setRecruitHasSearched(false);
+    }
+  }, [isCaptain, myTeam?.id]);
 
   useEffect(() => {
     if (selectedTeamId && teams.some((team) => team.id === selectedTeamId)) {
@@ -2873,6 +2886,50 @@ const TeamsPage = () => {
     }
   };
 
+  const searchRecruitCandidates = async () => {
+    if (!myTeam || !isCaptain) return;
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const response = await axios.get(`${API}/teams/recruit/search`, {
+        headers: authH,
+        params: { q: recruitQuery.trim(), limit: 8 },
+      });
+      const rows = response.data || [];
+      setRecruitCandidates(rows);
+      setRecruitHasSearched(true);
+      setMessage(rows.length ? `${rows.length} profil(s) trouves.` : "Aucun profil disponible.");
+    } catch (searchError) {
+      setError(searchError?.response?.data?.detail || "Recherche impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recruitMember = async (candidate) => {
+    if (!myTeam || !candidate?.id) return;
+    const label = recruitRole === "captain" ? "comme capitaine" : "dans l'equipe";
+    if (!window.confirm(`Ajouter ${candidate.pseudo} ${label} ?`)) return;
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      await axios.post(
+        `${API}/teams/${myTeam.id}/members/add`,
+        { user_id: candidate.id, role: recruitRole },
+        { headers: authH },
+      );
+      setRecruitCandidates((prev) => prev.filter((item) => item.id !== candidate.id));
+      setMessage(`${candidate.pseudo} a rejoint l'equipe.`);
+      await refreshAll();
+    } catch (recruitError) {
+      setError(recruitError?.response?.data?.detail || "Ajout impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const updateMemberRole = async (member, role) => {
     if (!myTeam || !member?.id) return;
     setBusy(true);
@@ -2918,6 +2975,8 @@ const TeamsPage = () => {
   const rosterMvp = resolveTeamMvp(rosterMembers);
   const rosterOthers = rosterMembers.filter((member) => `${member.id || member.pseudo}` !== `${rosterMvp?.id || rosterMvp?.pseudo}`);
   const canManageSelectedTeam = Boolean(myTeam?.id && isCaptain && selectedTeam?.id === myTeam.id);
+  const remainingSlots = Math.max(0, Number(myTeam?.members_limit || 0) - Number(myTeam?.members_count || 0));
+  const teamIsFull = Boolean(myTeam) && remainingSlots <= 0;
   const renderMemberActions = (member) => {
     if (!canManageSelectedTeam) return null;
     const isSelf = member.source !== "seed" && `${member.id}` === `${user?.id}`;
@@ -3038,9 +3097,10 @@ const TeamsPage = () => {
             <div className="space-y-3 mt-6 text-sm text-white/70">
               <div className="border border-white/10 p-4">1. Un joueur cree l'equipe et devient capitaine.</div>
               <div className="border border-white/10 p-4">2. Le recrutement peut rester ouvert pour recevoir des candidatures.</div>
-              <div className="border border-white/10 p-4">3. Le capitaine valide ou refuse les demandes entrantes.</div>
+              <div className="border border-white/10 p-4">3. Le capitaine valide les candidatures ou ajoute un joueur existant via la recherche.</div>
               <div className="border border-white/10 p-4">4. Seul le capitaine peut inscrire l'equipe dans un tournoi.</div>
-              <div className="border border-white/10 p-4">5. Les membres peuvent quitter l'equipe; le capitaine peut la dissoudre s'il reste seul.</div>
+              <div className="border border-white/10 p-4">5. Les equipes auto-composees concernent uniquement les files solo Fun 5v5 et tournois, jamais la page Equipes.</div>
+              <div className="border border-white/10 p-4">6. Les membres peuvent quitter l'equipe; le capitaine peut la dissoudre s'il reste seul.</div>
             </div>
           </div>
         </div>
@@ -3049,22 +3109,94 @@ const TeamsPage = () => {
       {myTeam && isCaptain && (
         <div className="glass p-6 mt-6">
           <div className="text-xs uppercase tracking-widest text-orange-500">Recrutement</div>
-          <h2 className="font-display text-3xl uppercase mt-3">Candidatures en attente</h2>
-          <div className="space-y-3 mt-5">
-            {applications.filter((item) => item.status === "pending").length === 0 && <div className="text-white/40">Aucune candidature en attente.</div>}
-            {applications.filter((item) => item.status === "pending").map((item) => (
-              <div key={item.id} className="border border-white/10 p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <h2 className="font-display text-3xl uppercase mt-3">Candidatures + recherche joueur</h2>
+          <div className="grid xl:grid-cols-[0.78fr_1.22fr] gap-6 mt-5">
+            <div className="space-y-3">
+              {applications.filter((item) => item.status === "pending").length === 0 && <div className="text-white/40">Aucune candidature en attente.</div>}
+              {applications.filter((item) => item.status === "pending").map((item) => (
+                <div key={item.id} className="border border-white/10 p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="font-display uppercase">{item.pseudo}</div>
+                    <div className="text-xs text-white/40 mt-1">{item.role}</div>
+                    {item.message && <p className="text-sm text-white/60 mt-2">{item.message}</p>}
+                  </div>
+                  <div className="flex gap-2">
+                    <button disabled={busy} onClick={() => handleApplication(item.id, "approve")} className="btn-neon text-xs">Accepter</button>
+                    <button disabled={busy} onClick={() => handleApplication(item.id, "reject")} className="btn-ghost text-xs">Refuser</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="border border-white/10 bg-white/5 p-5">
+              <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="font-display uppercase">{item.pseudo}</div>
-                  <div className="text-xs text-white/40 mt-1">{item.role}</div>
-                  {item.message && <p className="text-sm text-white/60 mt-2">{item.message}</p>}
+                  <div className="text-xs uppercase tracking-[0.3em] text-cyan-neon">Recherche</div>
+                  <div className="font-display text-2xl uppercase mt-2">Ajouter un joueur existant</div>
                 </div>
-                <div className="flex gap-2">
-                  <button disabled={busy} onClick={() => handleApplication(item.id, "approve")} className="btn-neon text-xs">Accepter</button>
-                  <button disabled={busy} onClick={() => handleApplication(item.id, "reject")} className="btn-ghost text-xs">Refuser</button>
-                </div>
+                <Badge variant={teamIsFull ? "offline" : "verified"}>
+                  {teamIsFull ? "Roster complet" : `${remainingSlots} place${remainingSlots > 1 ? "s" : ""}`}
+                </Badge>
               </div>
-            ))}
+              <p className="text-sm text-white/60 mt-3">Recherche par pseudo ou Steam ID.</p>
+
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  searchRecruitCandidates();
+                }}
+                className="grid lg:grid-cols-[1fr_180px_auto] gap-3 mt-4"
+              >
+                <input
+                  value={recruitQuery}
+                  onChange={(e) => setRecruitQuery(e.target.value)}
+                  placeholder="Pseudo ou Steam ID"
+                  maxLength={80}
+                />
+                <select value={recruitRole} onChange={(e) => setRecruitRole(e.target.value)}>
+                  <option value="member">Ajouter en membre</option>
+                  <option value="captain">Ajouter en capitaine</option>
+                </select>
+                <button disabled={busy || teamIsFull} className="btn-neon text-xs">
+                  <RefreshCw size={14}/>Chercher
+                </button>
+              </form>
+
+              <div className="mt-5">
+                {!recruitHasSearched && (
+                  <div className="border border-dashed border-white/10 p-5 text-sm text-white/45">
+                    Lance une recherche pour trouver un joueur libre.
+                  </div>
+                )}
+                {recruitHasSearched && recruitCandidates.length === 0 && (
+                  <div className="border border-dashed border-white/10 p-5 text-sm text-white/45">
+                    Aucun joueur libre trouve.
+                  </div>
+                )}
+                {recruitCandidates.length > 0 && (
+                  <div className="grid md:grid-cols-2 gap-4">
+                    {recruitCandidates.map((candidate, index) => (
+                      <TeamMemberPremiumCard
+                        key={candidate.id}
+                        member={candidate}
+                        teamColor={myTeam.logo_color}
+                        compact
+                        rank={index}
+                        actions={(
+                          <button
+                            disabled={busy || teamIsFull}
+                            onClick={() => recruitMember(candidate)}
+                            className="btn-neon text-xs"
+                          >
+                            <Plus size={12}/>Ajouter
+                          </button>
+                        )}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -3119,7 +3251,7 @@ const TeamsPage = () => {
                     member={member}
                     teamColor={selectedTeam.logo_color}
                     compact
-                    rank={index + 1}
+                    rank={index}
                     actions={renderMemberActions(member)}
                   />
                 ))}

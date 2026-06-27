@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017/readyup_arena_test")
 
 import server
-from server import TeamMemberAddReq, admin_add_team_member, admin_search_users
+from server import TeamMemberAddReq, add_team_member, admin_add_team_member, admin_search_users, search_team_recruit_candidates
 
 
 def _matches(doc, query):
@@ -144,6 +144,130 @@ def test_admin_add_team_member_attaches_user_to_team_and_returns_updated_roster(
                 "team-1",
                 TeamMemberAddReq(user_id="u-free", role="member"),
                 admin={"id": "admin-1", "email": "admin@example.com"},
+            )
+        )
+    finally:
+        server.db = original_db
+        server.journal = original_journal
+
+    assert team["id"] == "team-1"
+    assert team["members_count"] == 1
+    assert team["members"][0]["id"] == "u-free"
+    updated_user = _run(fake_db.users.find_one({"id": "u-free"}))
+    assert updated_user["team_id"] == "team-1"
+    assert updated_user["team_role"] == "member"
+
+
+def test_captain_recruit_search_returns_only_available_matching_profiles():
+    fake_db = FakeDB(
+        users=[
+            {
+                "id": "u-free",
+                "pseudo": "LoganPrime",
+                "email": "logan@example.com",
+                "steam_id": "7656",
+                "steam_verified": True,
+                "team_id": None,
+                "role": "Rifle",
+                "country": "FR",
+                "platform_elo": 1720,
+                "faceit_elo": 1530,
+                "premier_rating": 10865,
+                "kdr": 1.18,
+                "reliability": 94,
+            },
+            {
+                "id": "u-busy",
+                "pseudo": "LoganLocked",
+                "email": "locked@example.com",
+                "steam_id": "1234",
+                "steam_verified": True,
+                "team_id": "team-2",
+                "role": "AWP",
+            },
+            {
+                "id": "u-other",
+                "pseudo": "NoMatch",
+                "email": "nomatch@example.com",
+                "steam_id": "9999",
+                "steam_verified": False,
+                "team_id": None,
+            },
+        ],
+        teams=[
+            {
+                "id": "team-1",
+                "name": "Ready Squad",
+                "tag": "RSQ",
+                "country": "FR",
+                "logo_color": "#FF4600",
+                "language": "FR",
+                "recruitment_status": "open",
+                "members_limit": 7,
+                "captain_user_id": "capt-1",
+                "captain_pseudo": "Captain",
+            },
+        ],
+    )
+    original_db = server.db
+    server.db = fake_db
+    try:
+        results = _run(
+            search_team_recruit_candidates(
+                q="logan",
+                limit=10,
+                user={"id": "capt-1", "team_id": "team-1", "email": "captain@example.com"},
+            )
+        )
+    finally:
+        server.db = original_db
+
+    assert [item["id"] for item in results] == ["u-free"]
+    assert "email" not in results[0]
+    assert results[0]["steam_verified"] is True
+
+
+def test_captain_add_team_member_attaches_user_to_team_and_returns_updated_roster():
+    fake_db = FakeDB(
+        users=[
+            {
+                "id": "u-free",
+                "pseudo": "FreshPlayer",
+                "email": "fresh@example.com",
+                "steam_id": "7656119",
+                "steam_verified": True,
+                "team_id": None,
+                "team_role": None,
+                "country": "FR",
+            },
+        ],
+        teams=[
+            {
+                "id": "team-1",
+                "name": "Ready Squad",
+                "tag": "RSQ",
+                "country": "FR",
+                "logo_color": "#FF4600",
+                "language": "FR",
+                "recruitment_status": "open",
+                "members_limit": 7,
+                "captain_user_id": "capt-1",
+                "captain_pseudo": "Captain",
+            },
+        ],
+        players=[],
+        team_applications=[],
+    )
+    original_db = server.db
+    original_journal = server.journal
+    server.db = fake_db
+    server.journal = _noop_journal
+    try:
+        team = _run(
+            add_team_member(
+                "team-1",
+                TeamMemberAddReq(user_id="u-free", role="member"),
+                user={"id": "capt-1", "email": "captain@example.com"},
             )
         )
     finally:
